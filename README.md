@@ -7,7 +7,7 @@
 ## Kurulum
 
 ```bash
-git clone https://github.com/<kullanici>/ddo-case-emre-samed-abakay && cd ddo-case-emre-samed-abakay
+git clone https://github.com/emresamed/ddo-case-emre-samed-abakay && cd ddo-case-emre-samed-abakay
 cp .env.example .env
 docker compose up --build
 ```
