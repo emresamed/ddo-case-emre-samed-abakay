@@ -24,7 +24,7 @@ cp .env.example .env
 make verify          # = docker compose up -d --wait db api web && docker compose --profile verify run --rm verify
 ```
 
-Çıktının sonunda her kimlik için PASS/FAIL tablosu basılır; herhangi bir kontrol başarısızsa komut sıfırdan farklı kodla çıkar. Doğrulama tekrarlanabilir: her kontrol kendine ait, kimsenin dokunmadığı bir seans seçer. Yine de tamamen temiz bir başlangıç için önce `make reset-demo` çalıştırılabilir.
+Çıktının sonunda her kimlik için PASS/FAIL tablosu basılır; herhangi bir kontrol başarısızsa komut sıfırdan farklı kodla çıkar. Doğrulama tekrarlanabilir: her kontrol kendine ait, kimsenin dokunmadığı bir seans seçer ve başlangıçta önceki koşulardan kalan kendi sepetlerini bırakır. Simülatör çalışırken art arda 3 koşuda da 23/23 geçer. Tamamen temiz bir başlangıç için önce `make reset-demo` çalıştırılabilir.
 
 ```
 +--------+------+----------+----------------------------------------------------------------------------+
@@ -50,9 +50,11 @@ make verify          # = docker compose up -d --wait db api web && docker compos
 | IDEM   | PASS |    0.01s | Idempotency-Key replays the same response, rejects a different body        |
 | AUDIT  | PASS |    0.00s | audit log records critical actions and is append-only                      |
 | OPS    | PASS |    0.00s | metrics, OpenAPI, uniform error body                                       |
+| LIVE   | PASS |    0.01s | seat map changes are pushed over SSE (bonus)                               |
+| AB     | PASS |    0.01s | campaign A/B: stable assignment, offer in cart, z-test report (bonus)      |
 | WEB    | PASS |    0.00s | frontend is served and proxies the API                                     |
 +--------+------+----------+----------------------------------------------------------------------------+
-21 checks, 21 passed, 0 failed
+23 checks, 23 passed, 0 failed
 ```
 
 ## (b) Doğrulama kimlikleri: nasıl denenir, beklenen sonuç
@@ -81,6 +83,8 @@ Kontrollerin kodu: `backend/cmd/verify/main.go`. Uçların elle denenmesi için:
 | IDEM | Aynı `Idempotency-Key` ve gövdeyle `POST /api/holds` iki kez; aynı anahtar, farklı gövde; anahtarsız | aynı gövde + `Idempotent-Replayed: true`; farklı gövde `422 IDEMPOTENCY_KEY_REUSED`; anahtarsız `400` |
 | AUDIT | Muhasebe `GET /api/audit`; SQL ile `UPDATE audit_log` | `order.create`, `order.refund`, `seat.kind`, `hold.single_seat_override`, `gate.sync_conflicts` kayıtları var; UPDATE `audit_log is append-only` hatasıyla reddedilir |
 | OPS | `GET /metrics`, `GET /api/openapi.yaml`, bilinmeyen route, `/api/showtimes/abc/seats` | metrikler var; spec `/api/holds`'u içerir; `404` ve `400`, hepsi `{"error":{"code":…}}` biçiminde |
+| LIVE (bonus) | `GET /api/showtimes/{id}/events` akışını aç, başka bir müşteriyle o seansta koltuk tut; token olmadan akış | `event: ready`, ardından 3 sn içinde `event: seats`; token olmadan `401` |
+| AB (bonus) | Müşteri `GET /api/offers/me`; muhasebe `GET /api/reports/ab?from=&to=`; müşteri aynı rapor | teklif, `experiment.Assign`'ın öngördüğü kol; raporda 2 kol, `ödenen sepet ≤ sepet`, `0 ≤ p ≤ 1`; müşteri `403` |
 | WEB | `GET http://localhost:3000/`, `GET http://localhost:3000/api/me` | arayüz açılır, `/api` nginx üzerinden API'ye iletilir |
 
 ## (c) Arayüzde elle deneme senaryoları (http://localhost:3000)
@@ -94,6 +98,11 @@ Kontrollerin kodu: `backend/cmd/verify/main.go`. Uçların elle denenmesi için:
 7. **Salon düzeni:** `amir@` → Salon düzeni → bir koltuğa tıklayarak türünü değiştir (standart → VIP → engelli → kapalı). Satılmış bileti olan bir koltuğu kapatmaya çalışınca `SEAT_IN_USE` hatası gelir.
 8. **Hasılat:** `muhasebe@` → Hasılat → tarih aralığı → film ve kanal bazında brüt, indirim, tahsilat, net, eğlence vergisi, KDV ve iade; altında dağıtımcı payı (vizyon haftası ve oran).
 9. **Sistem canlı:** üst bardaki yeşil nokta ve "Son 1 dk: N sepet · N satış · N giriş" sayacı simülatör trafiğini gösterir.
+10. **Canlı doluluk + cüzdan (bonus):**
+    - Aynı seansı iki pencerede aç; harita üstündeki rozet "Canlı" yazar. Bir pencerede koltuk tutunca diğerinde sayfa yenilemeden turuncuya döner.
+    - Ödeme sonrası bilet sayfasında "Cüzdan bileti" → tam ekran bilet. "Takvime ekle" bir .ics indirir. Ağı kesip (DevTools → Offline) "Cüzdanım"ı açınca bilet yine görünür.
+11. **A/B (bonus):** müşteri sepetinde "Size özel: KOD" önerisi çıkar, Uygula'ya basınca fiyat güncellenir. `muhasebe@` → Hasılat ekranının altında "Kampanya A/B testi" tablosu ve karar kutusu.
+12. **Program iyileştirme:** `programci@` → Seans programı → önizleme; sonuç kutusunda "İyileştirme turu: N film yer değiştirdi; kapasite × talep skoru X → Y" satırı.
 
 ## Kanıt komutları (görev kimliğiyle)
 
@@ -110,6 +119,9 @@ Kontrollerin kodu: `backend/cmd/verify/main.go`. Uçların elle denenmesi için:
 | T-4 | `… go test -run 'Coupon\|GiftCard\|Refund' -v ./internal/service/` | eşzamanlı kupon ve çek kullanımı, iade sonrası bakiye |
 | T-5 | `cd backend && go test -v ./internal/domain/ticket/ ./internal/domain/gate/` | imza, sahtecilik, zaman penceresi, çevrimdışı tek kullanım, uzlaştırma kuralları |
 | T-5 | `… go test -run Gate -v ./internal/service/` | 10 kapı aynı anda: tek kabul; senkron çakışmaları; tekrar yükleme no-op |
+| T-3 | `cd backend && go test -run Improve -v ./internal/domain/schedule/` | iyileştirme skoru artırır, kısıtları bozmaz, sonraki seansa ve kapanışa uyar |
+| LIVE | `… go test -run LiveSeatEvents -v ./internal/service/` | tutma ve bırakmada bildirim gelir, başka seansın abonesine gelmez |
+| AB | `cd backend && go test -v ./internal/domain/experiment/` | deterministik ve dengeli atama, deneyler arası bağımsızlık, z-testi |
 | Kaos | `make chaos` | DB dururken `/health` 503 ve hızlı hata; DB geri gelince yeniden başlatmadan 200 |
 | Kapsama | `make cover` | domain paketleri satır kapsaması (%97,7) |
 

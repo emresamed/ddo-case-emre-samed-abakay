@@ -312,3 +312,17 @@ Authorization: Bearer {{a}}
 ###
 GET {{api}}/api/stats/live
 Authorization: Bearer {{c}}
+
+########## bonus: live seat map (SSE) and A/B
+
+# stream; hold seats in another tab to see "event: seats"
+GET {{api}}/api/showtimes/{{show}}/events
+Authorization: Bearer {{c}}
+
+### the customer's campaign arm
+GET {{api}}/api/offers/me
+Authorization: Bearer {{c}}
+
+### A/B report (accounting)
+GET {{api}}/api/reports/ab?from=2026-10-30&to=2026-11-13
+Authorization: Bearer {{a}}

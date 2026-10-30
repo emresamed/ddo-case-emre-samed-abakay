@@ -101,3 +101,43 @@ Her kayıt: bağlam → karar → sonuçlar (bedeli dahil).
 **Sonuçlar.**
 - (+) Node toolchain yok, imaj küçük, sayfa bir kez yüklendikten sonra tarayıcı ekranı ağ olmadan çalışır.
 - (−) ~1000 satırlık tek dosya; tip güvenliği yok. Ekip büyürse React + TypeScript'e geçiş önerilir.
+
+## ADR-9: Canlı doluluk için PostgreSQL LISTEN/NOTIFY + SSE
+
+**Bağlam.** Vizyon sabahında koltuk haritası saniyeler içinde değişiyor; yoklama hem gecikmeli hem de sunucuya gereksiz yük bindiriyor. Birden fazla API kopyası çalışabilir.
+
+**Karar.**
+- Koltuk durumunu değiştiren her transaction `pg_notify('seat_changes', showtime_id)` gönderir. Bildirim commit'e bağlıdır: geri alınan değişiklik bildirilmez, olan değişiklik bütün kopyalara ulaşır.
+- Her API süreci tek bir `LISTEN` bağlantısıyla aboneleri besler; abone başına 1 elemanlı kanal kullanılır, böylece yavaş istemci birikmez.
+- `GET /api/showtimes/{id}/events` yalnızca "değişti" der; istemci haritayı yeniden çeker.
+- Tarayıcı akışı `fetch()` ile okur. `EventSource` başlık gönderemediği için token'ı URL'ye koymak gerekirdi, o da loglara düşerdi.
+
+**Sonuçlar.**
+- (+) Ek altyapı (Redis, mesaj kuyruğu) gerekmez; mesaj kaybı durumunda bile istemci tam haritayı çektiği için tutarlıdır.
+- (−) Her izleyici bir bağlantı tutar. Bağlantılar en fazla 30 dakika yaşar ve kapanışta düzgünce kesilir; çok büyük ölçekte ayrı bir yayın katmanı gerekir.
+- (−) "Değişti" sinyali her seferinde tam harita çekmeye yol açar; fark (diff) göndermek daha az veri taşırdı ama kaçırılan mesajda tutarsızlık riski getirirdi.
+
+## ADR-10: A/B testinde deneme birimi sepet, atama SHA-256
+
+**Bağlam.** Kampanya etkisini ölçmek için müşterilerin kalıcı olarak bir kola atanması ve kolların istatistiksel olarak karşılaştırılması gerekiyor.
+
+**Karar.**
+- Atama: `SHA-256(deney anahtarı : kullanıcı id) mod kol sayısı`. Durumsuzdur, her kopyada aynı sonucu verir, tablo gerektirmez. Deney anahtarı karışıma girdiği için farklı deneyler bağımsızdır.
+- Teklif sepette gösterildiği için deneme birimi **sepettir** (açılan sepet = deneme, ödenen sepet = başarı). Kullanıcı bazlı dönüşüm bilgi amaçlı raporlanır.
+- Karar iki oranlı z-testiyle verilir (α = 0,05); her hücrede en az 5 gözlem yoksa "veri yetersiz" denir.
+
+**Sonuçlar.**
+- (+) FNV ile denendi; düşük bitlerin anahtara bağlı olmaması iki deneyi aynı bölünmeye zorladı. Bunu test yakaladı, SHA-256 bu sorunu taşımıyor.
+- (−) Aynı müşterinin sepetleri birbirinden bağımsız değildir (kümeleme). z-testi bu yüzden biraz iyimserdir; kullanıcı bazlı bootstrap daha doğru olurdu.
+- (−) Deney tanımı kodda sabit; çoklu deney yönetimi yok.
+
+## ADR-11: Çizelgede "önce kısıt, sonra kalite"
+
+**Bağlam.** Açgözlü üretici kısıtları sağlıyor ama salon kapasitesini film talebiyle eşleştirmiyor.
+
+**Karar.** Üretimden sonra ayrı bir yerel arama turu (`schedule.Improve`) çalışır. Yalnızca aynı gün ve aynı prime durumundaki seansların filmlerini değiştirir; böylece sözleşme kısıtları yapısal olarak korunur. Zaman çakışması ve kapanış saati her değişimde kontrol edilir. Bağımsız doğrulayıcı her planı yeniden kontrol eder.
+
+**Sonuçlar.**
+- (+) Kısıt mantığı ve kalite mantığı ayrık; her biri ayrı test ediliyor.
+- (+) Deterministik; aynı girdi aynı planı verir.
+- (−) Yerel optimum: seans saatlerini kaydırmaz, film sayısını değiştirmez. Seed'de kazanç %2,9; daha büyük kazanç zaman kaydırma ya da tam sayılı programlama gerektirir.

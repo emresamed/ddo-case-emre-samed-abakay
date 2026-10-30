@@ -23,13 +23,13 @@ Migrasyonlar ve seed API açılırken otomatik çalışır; elle yapılacak bir 
 
 | Komut | Ne yapar |
 |---|---|
-| `make verify` | Ayaktaki sistemde F-1…F-7, T-1…T-5, health, auth ve yetki senaryolarını uçtan uca dener, PASS/FAIL tablosu basar, hata varsa sıfırdan farklı kodla çıkar (kontrollerin kendisi birkaç saniye sürer) |
+| `make verify` | Ayaktaki sistemde F-1…F-7, T-1…T-5, bonuslar, health, auth ve yetki senaryolarını uçtan uca dener, PASS/FAIL tablosu basar, hata varsa sıfırdan farklı kodla çıkar (kontrollerin kendisi birkaç saniye sürer) |
 | `make load` | k6 ile 2000 sanal müşterinin aynı seansa aynı anda koltuk saldırısı |
 | `make reset-demo` | Veritabanını silip aynı tohumla yeniden seed eder |
 | `make chaos` | PostgreSQL'i durdurur, API'nin bozulduğunu (503) ve DB geri gelince yeniden başlatma gerekmeden toparlandığını gösterir |
 | `make test` | Birim ve entegrasyon testleri (entegrasyon testleri için `TEST_DATABASE_URL` gerekir) |
 
-**CI kanıtı:** GitHub Actions'taki `e2e` işi her push'ta temiz bir Linux makinede `docker compose up --build` + `make verify` (21/21 PASS) + `make chaos` (PASS) çalıştırır; `test` işi lint, race detector'lı testler ve kapsama kapısını (domain ≥ %70, şu an %97,7) koşturur.
+**CI kanıtı:** GitHub Actions'taki `e2e` işi her push'ta temiz bir Linux makinede `docker compose up --build` + `make verify` (23/23 PASS) + `make chaos` (PASS) çalıştırır; `test` işi lint, race detector'lı testler ve kapsama kapısını (domain ≥ %70, şu an %97,7) koşturur.
 
 Demo hesapların (her rol için bir hesap, parola `Demo1234!`) listesi ve elle deneme senaryoları için: [TESTING.md](TESTING.md).
 
@@ -103,7 +103,12 @@ Token yoksa veya geçersizse **401**, token geçerli ama rol yetkisizse **403** 
   - Salonlar lobi yığılmasın diye 10'ar dakika kaydırılarak başlar.
 - `schedule.Validate`: üreticiden bağımsızdır; çakışma (temizlik dahil), açılış saatleri, gösterim süresi, haftalık asgari ve prime payını kontrol eder.
 - Veritabanında `EXCLUDE USING gist (hall_id WITH =, tstzrange(starts_at, busy_until) WITH &&)` vardır; çakışan seans fiziksel olarak eklenemez.
-- Seed 10 salon × 14 günlük programı bu üreticiyle oluşturur (≈ 750 seans) ve doğrulamadan geçirir.
+- **İyileştirme turu** (`schedule.Improve`, yerel arama): açgözlü plan, hangi filmin hangi salona düştüğüne bakmaz. Üretimden sonra, aynı gün ve aynı prime durumundaki iki seansın filmleri, daha popüler film daha büyük salona geçiyorsa yer değiştirir. Hedef: Σ salon koltuğu × film talebi (prime saatte ×2).
+  - Aynı gün + aynı prime durumu şartı sayesinde her filmin haftalık sayısı ve prime payı yapısal olarak korunur; sözleşme kısıtları bozulamaz.
+  - Her yer değiştirme, sonraki seans + temizlik ve kapanış saatine göre ayrıca kontrol edilir.
+  - Talep için, dağıtımcının pazarlık ettiği haftalık asgari seans sayısı vekil olarak kullanılır.
+  - Seed'de 744 seans üzerinde 146 yer değiştirme yapar ve skoru %2,9 artırır; ihlal 0.
+- Seed 10 salon × 14 günlük programı bu üretici + iyileştirme turuyla oluşturur ve doğrulamadan geçirir.
 
 ### T-4 Fiyat, kampanya ve hasılat payı
 - **Fiyat sırası:** gün (çarşamba halk günü −%20, cuma–pazar +%10) → saat (13:00 öncesi matine −%15, 18:00–23:00 prime +%10) → doluluk (≥%50 +%5, ≥%80 +%15) → öğrenci (−%25; çarşamba indirimiyle birleşmez, büyük olan uygulanır). Sonuç 50 kuruşa yuvarlanır.
@@ -120,6 +125,14 @@ Token yoksa veya geçersizse **401**, token geçerli ama rol yetkisizse **403** 
 - **Çevrimdışı tarama** (`gate.Scanner`; arayüzde WebCrypto Ed25519 ile aynı mantık): imza ve zaman cihazda doğrulanır, cihazda yerel bir kullanılmış listesi tutulur, kabul edilen girişler kuyruğa alınır.
 - **Senkron** (`gate.Reconcile`): olaylar tarama zamanına göre sıralanır ve en erken tarama kazanır. Aynı bileti ikinci kez içeri alan kapı `DUPLICATE_ENTRY`, sonradan iade edilmiş bileti içeri alan kapı `ADMITTED_AFTER_REFUND` çakışması üretir. Çakışmalar saklanır, denetim kaydına yazılır ve salon amirinin ekranında görünür.
 - Aynı yüklemenin tekrarı (zaman aşımı sonrası yeniden deneme) yeni bir çakışma üretmez. Senkron yanıtı cihaza güncel kullanılmış ve iade listelerini geri gönderir.
+
+## Bonuslar
+
+| Bonus | Nasıl | Kanıt |
+|---|---|---|
+| **Canlı doluluk (SSE)** | Koltuk durumunu değiştiren her transaction (tutma, bırakma, satış, iade, süre dolumu) aynı transaction içinde `pg_notify('seat_changes', showtime_id)` gönderir; bildirim yalnızca commit olursa iletilir ve bütün API kopyalarına ulaşır. Her süreçte tek bir `LISTEN` bağlantısı aboneleri besler. `GET /api/showtimes/{id}/events` Server-Sent Events akışıdır. Tarayıcı akışı `fetch()` ile okur, böylece token URL'ye değil `Authorization` başlığına gider; akış koparsa 4 saniyelik yoklamaya düşer. | `make verify` → `LIVE`; `TestLiveSeatEvents_NotifyOnHoldAndRelease` |
+| **Cüzdan uyumlu bilet** | Müşteri → Biletlerim → "Cüzdan bileti": tam ekran mobil bilet (film, salon, saat, koltuk, büyük QR). Bilet cihaza kaydedilir ve kapıda internet olmadan "Cüzdanım"dan açılır. Takvime ekleme (.ics, 1 saat önce hatırlatma), yazdır/PDF, ana ekrana eklemek için web app manifest. Apple/Google Wallet `.pkpass` dosyası imza sertifikası gerektirdiği için yapılmadı. | arayüz: senaryo 10 ([TESTING.md](TESTING.md)) |
+| **Kampanya A/B raporu** | "Kasım indirimi" deneyi: A = `HOSGELDIN10` (%10), B = `SINEMA50` (300 TL üstüne 50 TL). Müşteri, `SHA-256(deney:kullanıcı)` ile deterministik olarak bir kola atanır; sepette yalnızca kendi kolunun kuponu "size özel" olarak önerilir (`GET /api/offers/me`). Muhasebe raporu (`GET /api/reports/ab`, Hasılat ekranının altında): kol başına sepet, ödenen sepet, sepet dönüşümü, ortalama sepet, sipariş başına indirim maliyeti, menü ekleme oranı, müşteri başına gelir. İki oranlı z-testi (α = 0,05) ve "veri yetersiz" koruması vardır. Deneme birimi **sepettir**: aynı müşteri çok sepet açtığı için "en az bir kez aldı" oranı %99'a doyuyordu. Simülatör iki kolda farklı terk oranı varsayar (A %30, B %22); bu bir simülasyon varsayımıdır. | `make verify` → `AB`; `internal/domain/experiment` testleri |
 
 ## Ortak teknik gereksinimler
 
@@ -183,7 +196,9 @@ Düşündüğüm alternatifler:
 - **Sıcak sıra:** kilit sıra bazında olduğu için 2000 kişinin aynı sıraya yüklendiği anda o sıradaki istekler sıraya girer. `lock_timeout 3s` sayesinde askıda kalmazlar ama `409 BUSY` alabilirler. Dürüst bir "tekrar deneyin" yanıtı veriyoruz, ama kuyruk adaleti yok: önce gelen önce alır garantisi verilmiyor.
 - **Tekli koltuk kuralı yalnızca tutma anında uygulanıyor.** Kuralı sağlayan bir sepetin komşusu sonradan iade edilir ya da tutması süresi dolarsa tek boşluk oluşabilir. Bu, kuralın "yeni seçim yeni boşluk yaratmasın" tanımına uygun, ama salonun genel durumu her zaman kurala uygun değil.
 - **Çevrimdışı giriş çakışmayı engelleyemez, yalnızca sonradan tespit eder.** Ağ kesikken iki kapı aynı bileti kabul edebilir; bu senkronda `DUPLICATE_ENTRY` olarak raporlanır. Cihaz saatleri kaymışsa "en erken tarama kazanır" kuralı yanlış kapıyı birinci sayabilir.
-- **Çizelgeleyici açgözlü (greedy):** kısıtları sağlıyor ve doğrulayıcıdan geçiyor, ama optimal değil; örneğin salon kapasitesini filmin talebiyle eşleştirmiyor. Ağır kısıtlarda (çok yüksek prime payı isteyen çok sayıda film) çözüm bulamayabilir; doğrulayıcı bunu raporlar, kaydetme reddedilir.
+- **Çizelgeleyici optimal değil:** açgözlü üretim + yerel arama, kısıtları sağlayan iyi bir plan bulur ama global optimumu garanti etmez. Yerel arama yalnızca film yer değiştirir; seans saatlerini kaydırmaz. Talep, gerçek satış verisi yerine sözleşmedeki asgari seans sayısından türetiliyor. Ağır kısıtlarda (çok yüksek prime payı isteyen çok sayıda film) çözüm bulamayabilir; doğrulayıcı bunu raporlar ve kaydetme reddedilir.
+- **A/B testi tek bir sabit deney:** deney tanımı kodda (`service.CurrentExperiment`); arayüzden deney açıp kapatmak yok. Kampanyanın etkisi simülatörde varsayımdır, gerçek etkiyi ancak gerçek trafik gösterir.
+- **SSE bağlantıları API sürecinde tutulur:** her açık koltuk haritası bir bağlantıdır. On binlerce eşzamanlı izleyici için ayrı bir yayın katmanı gerekir.
 - **Vergi oranları basitleştirilmiş yapılandırmadır** (KDV %10, eğlence vergisi %5); belediyeye göre değişen oranlar modellenmedi.
 - **Ödeme simüledir:** gerçek bir ödeme sağlayıcısı entegrasyonu yok; sipariş, ödeme alınmış kabul edilir.
 
@@ -217,7 +232,13 @@ for _, l := range lines {
         ...
 ```
 
-Düzeltmeyle birlikte regresyon testi `TestRefund_PartialKeepsOtherTickets` eklendi (commit `aaba08d`). İkinci bir düzeltme: senkron yanıtındaki `conflicts` alanı `omitempty` olduğu için çakışma yoksa JSON'da hiç bulunmuyordu ve arayüz `undefined.length` hatası veriyordu. Bu hatayı tarayıcıda elle denerken buldum; alan artık her zaman dizi olarak dönüyor.
+Düzeltmeyle birlikte regresyon testi `TestRefund_PartialKeepsOtherTickets` eklendi (commit `aaba08d`).
+
+Aynı şekilde düzelttiğim başka üretilmiş çıktılar:
+- **A/B ataması FNV-1a ile yapılıyordu.** FNV'nin en düşük biti anahtara neredeyse bağlı olmadığı için iki farklı deney her kullanıcıyı aynı kola atıyordu. Bunu `TestAssign_IndependentAcrossExperiments` yakaladı (0/2000 bağımsızlık); SHA-256'ya geçildi.
+- **T-3 iyileştirme turu** günün son seansında "sonraki seans" olarak ertesi sabahki seansa bakıyor ve kapanış saatini atlıyordu (22:35'e 165 dakikalık oyun). Bunu `TestImprove_RaisesObjectiveAndKeepsConstraints` yakaladı.
+- **verify aracı** idempotency anahtarını `time.Now().UnixNano()` ile üretiyordu. Windows saatinin çözünürlüğünde iki eşzamanlı istek aynı anahtarı alınca API, doğru şekilde, ilk yanıtı ikinciye tekrar oynattı ve test "2 kazanan" saydı. Veritabanında çift tutma olmadığını doğruladıktan sonra anahtar üretimi düzeltildi.
+- Senkron yanıtındaki `conflicts` alanı `omitempty` olduğu için çakışma yoksa JSON'da hiç yoktu ve arayüz `undefined.length` hatası veriyordu. Bunu tarayıcıda elle denerken buldum.
 
 ### 5. T-1 çözümünün doğru çalıştığını nasıl kanıtladın? Komut ve çıktı
 
@@ -234,7 +255,7 @@ $ make verify
 ...
 | T-1    | PASS |    0.47s | 200 concurrent holds on the same seats: exactly one wins; expiry; no doubl |
 ...
-21 checks, 21 passed, 0 failed
+23 checks, 23 passed, 0 failed
 ```
 
 **(b) Entegrasyon testi:**

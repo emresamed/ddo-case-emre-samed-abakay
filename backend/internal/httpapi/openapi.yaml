@@ -279,6 +279,13 @@ paths:
       summary: Live seat states and current prices (any role)
       parameters: [{ $ref: '#/components/parameters/Id' }]
       responses: { "200": { description: seat map with prices {full, student, combo} } }
+  /api/showtimes/{id}/events:
+    get:
+      summary: Server-Sent Events; "seats" whenever the seat map changes (any role). Refetch /seats on each event.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        "200": { description: "text/event-stream: event ready, event seats {showtime_id}, comment pings every 15 s" }
+        "401": { $ref: '#/components/responses/Error' }
   /api/showtimes/{id}/suggest:
     get:
       summary: Best adjacent seats for a group, never leaving a single empty seat (customer, box_office, hall_manager)
@@ -355,7 +362,7 @@ paths:
         "409": { description: "REFUND_WINDOW_CLOSED | TICKET_USED | NOTHING_TO_REFUND" }
   /api/tickets/{id}/qr:
     get:
-      summary: Signed QR payload SB1.<payload>.<ed25519 signature> (owner or box_office)
+      summary: Wallet pass - signed QR payload SB1.<payload>.<ed25519 signature> plus movie, hall, seat, times (owner or box_office)
       parameters: [{ $ref: '#/components/parameters/Uuid' }]
       responses: { "200": { description: "{ticket_id, qr}" } }
   /api/gate/state:
@@ -394,6 +401,15 @@ paths:
       summary: Distributor share per film and release week on net ticket revenue (accounting)
       parameters: [{ $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }]
       responses: { "200": { description: rows } }
+  /api/reports/ab:
+    get:
+      summary: Campaign A/B report per arm with a two-proportion z-test on cart conversion (accounting)
+      parameters: [{ $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }]
+      responses: { "200": { description: "{experiment, arms[], comparison{z_score, p_value, significant, winner}}" } }
+  /api/offers/me:
+    get:
+      summary: The customer's arm of the running campaign experiment (customer)
+      responses: { "200": { description: "{experiment, variant{name, coupon_code, description}}" } }
   /api/schedule/generate:
     post:
       summary: Generate a conflict-free plan; save=true writes it into an empty period (programmer)
@@ -402,7 +418,7 @@ paths:
           application/json:
             schema: { type: object, properties: { from: { type: string, format: date }, days: { type: integer }, save: { type: boolean } } }
       responses:
-        "200": { description: "{shows, problems[], saved, plan[]}" }
+        "200": { description: "{shows, problems[], saved, plan[], improvement{objective_before, objective_after, swaps}}" }
         "409": { description: PERIOD_NOT_EMPTY }
   /api/schedule/validate:
     get:
