@@ -8,25 +8,30 @@
   <meta property="og:title" content="SahneBilet">
   <meta property="og:description" content="Seans programı, koltuk satışı, kampanya ve QR giriş kontrolü.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Lora:wght@400;500&display=swap">
   <link rel="stylesheet" href="/app.css">
   <link rel="manifest" href="/manifest.webmanifest">
-  <meta name="theme-color" content="#0F172A">
+  <meta name="theme-color" content="#8B3A3A">
   <meta name="apple-mobile-web-app-capable" content="yes">
 </head>
 <body>
   <header class="topbar">
     <div class="wrap topbar-in">
-      <a href="#/" class="brand">SahneBilet</a>
+      <a href="#/" class="brand"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 8a2 2 0 0 0 2-2h14a2 2 0 0 0 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 0-2 2H5a2 2 0 0 0-2-2v-2a2 2 0 0 0 0-4z"/><path d="M9 6v12" stroke-dasharray="2 2"/></svg>SahneBilet</a>
       <nav id="nav" class="nav"></nav>
       <div class="who">
-        <span id="live" class="live" title="Son 1 dakikadaki sistem hareketi"></span>
-        <span id="user" class="muted"></span>
-        <button id="logout" class="btn btn-ghost btn-sm" hidden>Çıkış</button>
+        <span id="role" class="role" hidden><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span id="roleName"></span></span>
+        <button id="logout" class="linkbtn" hidden>Çıkış</button>
       </div>
     </div>
   </header>
   <main id="app" class="wrap"></main>
+  <footer id="foot" class="foot" hidden>
+    <div class="wrap foot-in">
+      <div><div id="acctLabel" class="label"></div><div id="user" class="small"></div></div>
+      <span id="live" class="live" title="Son 1 dakikadaki sistem hareketi"></span>
+    </div>
+  </footer>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" async></script>
   <script src="/lib.js" defer></script>
   <script src="/app.js" defer></script>

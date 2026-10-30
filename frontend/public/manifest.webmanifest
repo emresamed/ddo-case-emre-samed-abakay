@@ -3,7 +3,7 @@
   "short_name": "SahneBilet",
   "start_url": "/#/wallet",
   "display": "standalone",
-  "background_color": "#FBFBFA",
-  "theme_color": "#0F172A",
+  "background_color": "#F4F1EA",
+  "theme_color": "#8B3A3A",
   "lang": "tr"
 }

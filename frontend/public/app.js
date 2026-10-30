@@ -113,13 +113,22 @@ async function render(view) {
 function setNav(route) {
   const a = auth.get();
   const nav = document.getElementById('nav');
-  const user = document.getElementById('user');
   const out = document.getElementById('logout');
-  if (!a) { nav.innerHTML = ''; user.textContent = ''; out.hidden = true; return; }
+  const role = document.getElementById('role');
+  const foot = document.getElementById('foot');
+  if (!a) { nav.innerHTML = ''; out.hidden = true; role.hidden = true; foot.hidden = true; return; }
+  const name = ROLE_NAMES[a.user.role] || a.user.role;
+  // detail pages highlight the list they belong to
+  const section = route.startsWith('#/show/') ? '#/shows' : route.startsWith('#/order/') ? '#/orders'
+    : route.startsWith('#/pass/') ? '#/wallet' : route;
   nav.innerHTML = (MENUS[a.user.role] || []).map(([href, label]) =>
-    `<a href="${href}" class="${route.startsWith(href) ? 'active' : ''}">${esc(label)}</a>`).join('');
-  user.textContent = `${a.user.email} · ${ROLE_NAMES[a.user.role] || a.user.role}`;
+    `<a href="${href}" class="${section.startsWith(href) ? 'active' : ''}">${esc(label)}</a>`).join('');
+  document.getElementById('roleName').textContent = name;
+  document.getElementById('acctLabel').textContent = `${name.toLocaleUpperCase('tr-TR')} HESABI`;
+  document.getElementById('user').textContent = a.user.email;
+  role.hidden = false;
   out.hidden = false;
+  foot.hidden = false;
 }
 
 // ---------- live indicator (simulator traffic shows the system is alive)
@@ -185,40 +194,80 @@ function viewLogin() {
 
 async function viewShows() {
   const now = new Date();
-  const to = new Date(now.getTime() + 3 * 864e5);
+  const dayMs = 864e5;
+  const days = [0, 1, 2].map((i) => isoDay(new Date(now.getTime() + i * dayMs)));
+  const lastDayEnd = new Date(new Date(days[2] + 'T00:00:00+03:00').getTime() + dayMs);
   const [movies, page] = await Promise.all([
     api('GET', '/api/movies'),
-    api('GET', `/api/showtimes?limit=200&from=${encodeURIComponent(new Date(now - 30 * 6e4).toISOString())}&to=${encodeURIComponent(to.toISOString())}`),
+    api('GET', `/api/showtimes?limit=200&from=${encodeURIComponent(new Date(now - 3 * 3600e3).toISOString())}&to=${encodeURIComponent(lastDayEnd.toISOString())}`),
   ]);
   const role = auth.get().user.role;
-  const title = role === 'box_office' ? 'Gişe satışı' : 'Seanslar';
-  const draw = (movieId) => {
-    const items = page.items.filter((s) => !movieId || s.movie_id === Number(movieId));
-    const days = {};
-    items.forEach((s) => { (days[isoDay(s.starts_at)] ||= []).push(s); });
-    return Object.keys(days).length === 0 ? empty('Bu filtrede önümüzdeki 3 gün için seans yok.') :
-      Object.entries(days).map(([, list]) => `
-        <section class="day">
-          <div class="label" style="margin-bottom:6px">${esc(fmtDay(list[0].starts_at))}</div>
-          ${list.map((s) => {
-            const pct = Math.round((100 * s.taken) / s.capacity);
-            const started = new Date(s.starts_at) < now;
-            return `<a class="show-row" href="#/show/${s.id}">
-              <span class="show-time">${fmtTime(s.starts_at)}</span>
-              <span><strong>${esc(s.movie_title)}</strong><br><span class="muted small">${esc(s.hall_name)} · bitiş ${fmtTime(s.ends_at)}</span></span>
-              ${started ? '<span class="occ"><span class="tag">Seans başladı</span></span>' : occupancy(s.capacity - s.taken, s.capacity, pct)}
-            </a>`;
-          }).join('')}
-        </section>`).join('');
+  const state = { day: days[0], movie: '' };
+  const noon = (key) => new Date(key + 'T12:00:00+03:00');
+  const part = (key, opt) => noon(key).toLocaleDateString('tr-TR', { ...opt, timeZone: TZ });
+  const rangeLabel = `${part(days[0], { day: 'numeric', month: 'long' })} — ${part(days[2], { day: 'numeric', month: 'long' })}`;
+
+  const drawDays = () => days.map((d, i) => `
+    <button class="day-card ${d === state.day ? 'sel' : ''}" data-day="${d}">
+      <span class="num">${part(d, { day: '2-digit' })}</span>
+      <span class="meta"><b>${esc(part(d, { month: 'long' }))}</b>${esc(part(d, { weekday: 'long' }))}${i === 0 ? '<span class="today">Bugün</span>' : ''}</span>
+    </button>`).join('');
+
+  const drawList = () => {
+    // started shows stay visible while they run (late arrivals ask about them), finished ones drop out
+    const items = page.items.filter((s) => isoDay(s.starts_at) === state.day && new Date(s.ends_at) > now
+      && (!state.movie || s.movie_id === Number(state.movie)));
+    const open = items.filter((s) => new Date(s.starts_at) > now).length;
+    const head = `
+      <div class="prog-head">
+        <div><h2>${esc(part(state.day, { day: 'numeric', month: 'long', weekday: 'long' }))}</h2><span class="count">${items.length} seans</span></div>
+        <span class="avail">${open > 0 ? `${open} seans için koltuk seçilebilir` : 'Bu gün için açık seans kalmadı'}</span>
+      </div>`;
+    if (items.length === 0) return head + empty('Bu filtrede bu gün için seans yok.');
+    return head + `
+      <div class="st-head"><span>Saat</span><span>Film / oyun</span><span>Salon</span><span>Doluluk</span><span style="text-align:right">Bilet</span></div>
+      ${items.map((s) => {
+        const started = new Date(s.starts_at) <= now;
+        const pct = Math.round((100 * s.taken) / s.capacity);
+        const cta = role === 'box_office' ? 'Gişeden sat' : 'Koltuk seç';
+        return `<a class="st-row ${started ? 'past' : ''}" href="${started ? '#/shows' : `#/show/${s.id}`}" ${started ? 'aria-disabled="true" tabindex="-1"' : ''}>
+          <span class="st-time">${fmtTime(s.starts_at)}<small>bitiş ${fmtTime(s.ends_at)}</small></span>
+          <span class="st-title">${esc(s.movie_title)}</span>
+          <span class="st-hall">${esc(s.hall_name.replace(/ \(.*\)$/, ''))}</span>
+          ${started ? '<span class="dash">—</span>' : occupancy(s.capacity - s.taken, s.capacity, pct)}
+          <span class="st-action">${started ? '<span class="started">+ Seans başladı</span>' : `<span class="btn btn-line">${cta} <span aria-hidden="true">↗</span></span>`}</span>
+        </a>`;
+      }).join('')}
+      <div class="prog-note"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>Doluluk, sepetteki koltukları da içerir.</div>`;
   };
+
   $app.innerHTML = `
-    <div class="spread"><div><h1>${title}</h1><p class="lead">Önümüzdeki 3 günün seansları. Doluluk, sepetteki koltukları da içerir.</p></div>
-      <label class="field" style="min-width:220px">Film / oyun
+    <div class="page-head">
+      <div>
+        <div class="eyebrow">${role === 'box_office' ? 'Gişe' : 'Sinema &amp; sahne'}</div>
+        <h1>${role === 'box_office' ? 'Gişe satışı' : 'Seanslar'}</h1>
+        <p class="lead">Önümüzdeki 3 günün seansları.</p>
+      </div>
+      <label class="field">Film / oyun
         <select id="movie"><option value="">Tümü</option>${movies.items.map((m) => `<option value="${m.id}">${esc(m.title)}</option>`).join('')}</select>
       </label>
     </div>
-    <div class="card" id="list">${draw('')}</div>`;
-  $app.querySelector('#movie').addEventListener('change', (e) => { $app.querySelector('#list').innerHTML = draw(e.target.value); });
+    <div class="prog">
+      <aside><div class="days-label">${esc(rangeLabel)}</div><div class="days" id="days">${drawDays()}</div></aside>
+      <section id="list">${drawList()}</section>
+    </div>`;
+  $app.querySelector('#movie').addEventListener('change', (e) => { state.movie = e.target.value; $app.querySelector('#list').innerHTML = drawList(); });
+  $app.querySelector('#days').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-day]');
+    if (!b) return;
+    state.day = b.dataset.day;
+    $app.querySelector('#days').innerHTML = drawDays();
+    $app.querySelector('#list').innerHTML = drawList();
+  });
+  $app.querySelector('#list').addEventListener('click', (e) => {
+    const a = e.target.closest('a.st-row.past');
+    if (a) e.preventDefault();
+  });
 }
 
 // --- seat selection, cart and checkout
