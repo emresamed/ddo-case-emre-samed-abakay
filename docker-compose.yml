@@ -90,7 +90,7 @@ services:
     environment:
       API_URL: http://api:8080
       VUS: ${K6_VUS:-2000}
-    command: ["run", "/scripts/seat-rush.js"]
+    command: ["run", "--summary-trend-stats=med,p(95),p(99),max", "/scripts/seat-rush.js"]
     depends_on:
       api:
         condition: service_healthy

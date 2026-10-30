@@ -96,8 +96,23 @@ jobs:
         run: cp .env.example .env && docker compose up --build -d --wait db api web
       - name: make verify
         run: make verify
-      - name: Chaos scenario
-        run: sh scripts/chaos.sh
+      - name: k6 load test (2000 VUs, Linux)
+        run: |
+          make load 2>&1 | tee k6.txt
+          {
+            echo "## k6 seat rush, 2000 VUs on ubuntu-latest"
+            echo '```'
+            grep -E "rush on showtime|integrity:|hold_|order_ok|http_req_duration|name:hold|http_reqs|http_req_failed|no double sale|vus_max" k6.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Simulator premiere rush (2000 customers)
+        run: |
+          make rush 2>&1 | tee rush.txt
+          { echo "## Simulator premiere rush"; echo '```'; grep -A4 "premiere rush" rush.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Chaos scenarios
+        run: |
+          sh scripts/chaos.sh 2>&1 | tee chaos.txt
+          { echo "## Chaos"; echo '```'; cat chaos.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Logs on failure
         if: failure()
         run: docker compose logs --tail=200
