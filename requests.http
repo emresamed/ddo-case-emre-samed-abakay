@@ -1,0 +1,314 @@
+# SahneBilet — VS Code REST Client collection (humao.rest-client)
+# Run the requests top to bottom: logins capture tokens, later requests reuse ids.
+@api = http://localhost:8080
+@pw = Demo1234!
+
+### health
+GET {{api}}/health
+
+### metrics
+GET {{api}}/metrics
+
+### OpenAPI
+GET {{api}}/api/openapi.yaml
+
+########## auth: one login per role
+
+# @name customer
+POST {{api}}/api/auth/login
+Content-Type: application/json
+
+{"email": "musteri@sahnebilet.test", "password": "{{pw}}"}
+
+###
+# @name box
+POST {{api}}/api/auth/login
+Content-Type: application/json
+
+{"email": "gise@sahnebilet.test", "password": "{{pw}}"}
+
+###
+# @name mgr
+POST {{api}}/api/auth/login
+Content-Type: application/json
+
+{"email": "amir@sahnebilet.test", "password": "{{pw}}"}
+
+###
+# @name prog
+POST {{api}}/api/auth/login
+Content-Type: application/json
+
+{"email": "programci@sahnebilet.test", "password": "{{pw}}"}
+
+###
+# @name acct
+POST {{api}}/api/auth/login
+Content-Type: application/json
+
+{"email": "muhasebe@sahnebilet.test", "password": "{{pw}}"}
+
+###
+# @name gate
+POST {{api}}/api/auth/login
+Content-Type: application/json
+
+{"email": "kapi@sahnebilet.test", "password": "{{pw}}"}
+
+###
+@c = {{customer.response.body.access_token}}
+@b = {{box.response.body.access_token}}
+@m = {{mgr.response.body.access_token}}
+@p = {{prog.response.body.access_token}}
+@a = {{acct.response.body.access_token}}
+@g = {{gate.response.body.access_token}}
+
+### wrong password -> 401 INVALID_CREDENTIALS
+POST {{api}}/api/auth/login
+Content-Type: application/json
+
+{"email": "musteri@sahnebilet.test", "password": "yanlis"}
+
+### refresh (rotates; the same refresh token a second time -> 401)
+POST {{api}}/api/auth/refresh
+Content-Type: application/json
+
+{"refresh_token": "{{customer.response.body.refresh_token}}"}
+
+### me
+GET {{api}}/api/me
+Authorization: Bearer {{c}}
+
+### no token -> 401
+GET {{api}}/api/me
+
+### customer on an accounting endpoint -> 403
+GET {{api}}/api/reports/revenue?from=2026-10-01&to=2026-12-31
+Authorization: Bearer {{c}}
+
+########## F-1 halls and seats
+
+GET {{api}}/api/halls
+Authorization: Bearer {{c}}
+
+###
+GET {{api}}/api/halls/1/seats
+Authorization: Bearer {{c}}
+
+### hall manager blocks a broken seat (seat id 1 = Salon 1 A-1)
+PATCH {{api}}/api/seats/1
+Authorization: Bearer {{m}}
+Content-Type: application/json
+
+{"kind": "blocked"}
+
+###
+PATCH {{api}}/api/seats/1
+Authorization: Bearer {{m}}
+Content-Type: application/json
+
+{"kind": "standard"}
+
+########## F-2 movies and showtimes
+
+GET {{api}}/api/movies
+Authorization: Bearer {{c}}
+
+###
+POST {{api}}/api/movies
+Authorization: Bearer {{p}}
+Content-Type: application/json
+
+{"title": "Gece Treni", "kind": "film", "duration_min": 112, "distributor": "Boğaz Yapım", "release_date": "2026-11-06",
+ "min_weekly_shows": 10, "min_prime_bp": 2000, "share_week1_bp": 5500, "share_week2_bp": 5000, "share_later_bp": 4500}
+
+###
+# @name shows
+GET {{api}}/api/showtimes?limit=5&hall_id=1
+Authorization: Bearer {{c}}
+
+### next page (keyset)
+GET {{api}}/api/showtimes?limit=5&hall_id=1&cursor={{shows.response.body.next_cursor}}
+Authorization: Bearer {{c}}
+
+###
+@show = {{shows.response.body.items[4].id}}
+
+# @name seatmap
+GET {{api}}/api/showtimes/{{show}}/seats
+Authorization: Bearer {{c}}
+
+### T-2 group suggestion (never offers accessible seats)
+# @name suggest
+GET {{api}}/api/showtimes/{{show}}/suggest?n=3
+Authorization: Bearer {{c}}
+
+### T-2 accessible group
+GET {{api}}/api/showtimes/{{show}}/suggest?n=2&accessible=true
+Authorization: Bearer {{c}}
+
+########## F-4 / T-1 hold
+
+# @name hold
+POST {{api}}/api/holds
+Authorization: Bearer {{c}}
+Content-Type: application/json
+Idempotency-Key: demo-hold-1
+
+{"showtime_id": {{show}}, "seat_ids": {{suggest.response.body.items[0].seat_ids}}}
+
+### same key, same body -> same response, header Idempotent-Replayed: true
+POST {{api}}/api/holds
+Authorization: Bearer {{c}}
+Content-Type: application/json
+Idempotency-Key: demo-hold-1
+
+{"showtime_id": {{show}}, "seat_ids": {{suggest.response.body.items[0].seat_ids}}}
+
+### T-2 single-seat rule: seats 2 and 3 of the front row leave seat 1 alone -> 422 SINGLE_SEAT_RULE
+POST {{api}}/api/holds
+Authorization: Bearer {{c}}
+Content-Type: application/json
+Idempotency-Key: demo-orphan-1
+
+{"showtime_id": {{show}}, "seat_ids": [{{seatmap.response.body.seats[1].id}}, {{seatmap.response.body.seats[2].id}}]}
+
+### hall manager override -> 201 (audited)
+POST {{api}}/api/holds
+Authorization: Bearer {{m}}
+Content-Type: application/json
+Idempotency-Key: demo-orphan-override-1
+
+{"showtime_id": {{show}}, "seat_ids": [{{seatmap.response.body.seats[1].id}}, {{seatmap.response.body.seats[2].id}}], "override_single_seat": true}
+
+###
+GET {{api}}/api/holds/{{hold.response.body.id}}
+Authorization: Bearer {{c}}
+
+### extend (max twice)
+POST {{api}}/api/holds/{{hold.response.body.id}}/extend
+Authorization: Bearer {{c}}
+
+########## F-5 / T-4 price and order
+
+POST {{api}}/api/quote
+Authorization: Bearer {{c}}
+Content-Type: application/json
+
+{"hold_id": "{{hold.response.body.id}}", "combos": 1, "coupon_code": "HOSGELDIN10", "gift_card_code": "HC-DEMO-100"}
+
+###
+# @name order
+POST {{api}}/api/orders
+Authorization: Bearer {{c}}
+Content-Type: application/json
+Idempotency-Key: demo-order-1
+
+{"hold_id": "{{hold.response.body.id}}", "combos": 1, "coupon_code": "HOSGELDIN10", "gift_card_code": "HC-DEMO-100"}
+
+###
+GET {{api}}/api/orders
+Authorization: Bearer {{c}}
+
+###
+GET {{api}}/api/gift-cards/HC-DEMO-100
+Authorization: Bearer {{c}}
+
+### box office sells a gift card
+POST {{api}}/api/gift-cards
+Authorization: Bearer {{b}}
+Content-Type: application/json
+Idempotency-Key: demo-giftcard-1
+
+{"amount_kurus": 25000}
+
+########## F-6 / T-5 gate
+
+# @name qr
+GET {{api}}/api/tickets/{{order.response.body.lines[0].ticket_id}}/qr
+Authorization: Bearer {{c}}
+
+### online scan: ACCEPTED (QR is valid from 24 h before the show)
+POST {{api}}/api/gate/scan
+Authorization: Bearer {{g}}
+Content-Type: application/json
+
+{"gate_id": "KAPI-1", "code": "{{qr.response.body.qr}}"}
+
+### second scan at another gate: REJECTED_ALREADY_USED
+POST {{api}}/api/gate/scan
+Authorization: Bearer {{g}}
+Content-Type: application/json
+
+{"gate_id": "KAPI-2", "code": "{{qr.response.body.qr}}"}
+
+### scanner preload: public key + used + refunded tickets
+GET {{api}}/api/gate/state
+Authorization: Bearer {{g}}
+
+### offline upload: an earlier scan of the same ticket at KAPI-9 -> DUPLICATE_ENTRY conflict
+POST {{api}}/api/gate/sync
+Authorization: Bearer {{g}}
+Content-Type: application/json
+
+{"gate_id": "KAPI-9", "scans": [{"ticket_id": "{{order.response.body.lines[0].ticket_id}}", "scanned_at": "2026-10-30T10:00:00Z"}]}
+
+###
+GET {{api}}/api/gate/conflicts
+Authorization: Bearer {{m}}
+
+########## F-7 refund and reports
+
+# refund the second ticket only
+POST {{api}}/api/orders/{{order.response.body.id}}/refund
+Authorization: Bearer {{c}}
+Content-Type: application/json
+Idempotency-Key: demo-refund-1
+
+{"ticket_ids": ["{{order.response.body.lines[1].ticket_id}}"]}
+
+###
+GET {{api}}/api/reports/revenue?from=2026-10-30&to=2026-11-13
+Authorization: Bearer {{a}}
+
+###
+GET {{api}}/api/reports/distributor?from=2026-10-30&to=2026-11-13
+Authorization: Bearer {{a}}
+
+###
+GET {{api}}/api/showtimes/{{show}}/integrity
+Authorization: Bearer {{m}}
+
+########## T-3 schedule
+
+# from = the day the database was seeded (first showtime date)
+GET {{api}}/api/schedule/validate?from=2026-10-30&days=14
+Authorization: Bearer {{p}}
+
+###
+POST {{api}}/api/schedule/generate
+Authorization: Bearer {{p}}
+Content-Type: application/json
+
+{"from": "2027-01-04", "days": 14, "save": false}
+
+########## coupons, audit, live
+
+GET {{api}}/api/coupons
+Authorization: Bearer {{a}}
+
+###
+POST {{api}}/api/coupons
+Authorization: Bearer {{a}}
+Content-Type: application/json
+
+{"code": "KASIM15", "percent": true, "value": 1500, "min_total": 0, "max_uses": 500,
+ "valid_from": "2026-11-01T00:00:00+03:00", "valid_to": "2026-11-30T23:59:59+03:00"}
+
+###
+GET {{api}}/api/audit?limit=20
+Authorization: Bearer {{a}}
+
+###
+GET {{api}}/api/stats/live
+Authorization: Bearer {{c}}
