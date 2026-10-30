@@ -2,7 +2,7 @@
 # needs a local Go toolchain.
 COMPOSE ?= docker compose
 
-.PHONY: up down logs verify load rush reset-demo test cover chaos env
+.PHONY: up down logs verify load rush reset-demo test test-web cover chaos env
 
 env:
 	@test -f .env || cp .env.example .env
@@ -41,6 +41,10 @@ reset-demo: env
 
 test:
 	cd backend && go test -race -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | tail -1
+
+# Frontend unit tests (Node 20+, no npm install needed).
+test-web:
+	node --test "frontend/test/*.test.js"
 
 cover:
 	cd backend && go test -coverprofile=coverage.out ./internal/domain/... && go tool cover -func=coverage.out
