@@ -105,15 +105,18 @@ func run(cmd string, log *slog.Logger) error {
 	}
 
 	go svc.RunSweeper(ctx, 15*time.Second, func(err error) { log.Error("hold sweeper", "error", err.Error()) })
+	go svc.RunSeatListener(ctx, func(err error) { log.Error("seat listener", "error", err.Error()) })
+	sseStop := make(chan struct{})
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(svc, log),
+		Handler:           httpapi.New(svc, log, sseStop),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       90 * time.Second,
 	}
+	srv.RegisterOnShutdown(func() { close(sseStop) })
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("listening", "addr", cfg.Addr)

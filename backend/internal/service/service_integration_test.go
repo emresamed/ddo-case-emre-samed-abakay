@@ -58,7 +58,11 @@ func TestMain(m *testing.M) {
 	if err := seed.Run(ctx, pool, svc, 42, 14, seed.Today(loc)); err != nil {
 		panic(err)
 	}
+	lctx, stopListener := context.WithCancel(ctx)
+	go svc.RunSeatListener(lctx, func(err error) { fmt.Println("listener:", err) })
+	time.Sleep(200 * time.Millisecond) // let LISTEN register
 	code := m.Run()
+	stopListener()
 	pool.Close()
 	os.Exit(code)
 }
@@ -570,5 +574,36 @@ func TestRefund_PartialKeepsOtherTickets(t *testing.T) {
 	}
 	if _, err := svc.Refund(ctx, a, o.ID, []string{"not-a-ticket"}); code(err) != "VALIDATION_ERROR" {
 		t.Fatalf("unknown ticket id: %v", err)
+	}
+}
+
+func TestLiveSeatEvents_NotifyOnHoldAndRelease(t *testing.T) {
+	ctx := context.Background()
+	show := freshShow(t)
+	ch, cancel := svc.Subscribe(show)
+	defer cancel()
+	other, cancelOther := svc.Subscribe(show + 100000)
+	defer cancelOther()
+	a := customer(t, 65)
+	h, err := svc.CreateHold(ctx, a, service.HoldRequest{ShowtimeID: show, SeatIDs: rowSeats(t, show, 6, 2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait := func(what string) {
+		select {
+		case <-ch:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("no seat event after %s", what)
+		}
+	}
+	wait("hold")
+	if err := svc.ReleaseHold(ctx, a, h.ID); err != nil {
+		t.Fatal(err)
+	}
+	wait("release")
+	select {
+	case <-other:
+		t.Fatal("subscriber of another showtime was notified")
+	default:
 	}
 }

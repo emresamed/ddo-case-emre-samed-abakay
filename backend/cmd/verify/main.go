@@ -109,6 +109,7 @@ func main() {
 		{"IDEM", "Idempotency-Key replays the same response, rejects a different body", v.idem},
 		{"AUDIT", "audit log records critical actions and is append-only", v.audit},
 		{"OPS", "metrics, OpenAPI, uniform error body", v.ops},
+		{"LIVE", "seat map changes are pushed over SSE (bonus)", v.live},
 		{"WEB", "frontend is served and proxies the API", v.webCheck},
 	}
 	for _, ch := range checks {
@@ -1429,4 +1430,77 @@ func (v *V) webCheck(ctx context.Context) error {
 	}
 	r, err = wc.Do(ctx, http.MethodGet, "/api/me", v.tok["customer"], nil, "")
 	return expect(r, err, 200, "frontend proxies /api")
+}
+
+// live opens the SSE stream of a showtime, holds seats in it and expects a
+// "seats" event within a few seconds.
+func (v *V) live(ctx context.Context) error {
+	st, err := v.showtime(ctx, 3*time.Hour, 14*24*time.Hour)
+	if err != nil {
+		return err
+	}
+	m, err := v.seats(ctx, v.tok["customer"], st.ID)
+	if err != nil {
+		return err
+	}
+	ids, err := rowStart(m, 2, 1)
+	if err != nil {
+		return err
+	}
+	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(sctx, http.MethodGet, fmt.Sprintf("%s/api/showtimes/%d/events", v.c.Base, st.ID), nil)
+	req.Header.Set("Authorization", "Bearer "+v.tok["customer"])
+	res, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/event-stream") {
+		return fmt.Errorf("stream: %d %s", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+	events := make(chan string, 8)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := res.Body.Read(buf)
+			if n > 0 {
+				events <- string(buf[:n])
+			}
+			if err != nil {
+				close(events)
+				return
+			}
+		}
+	}()
+	waitFor := func(substr string) error {
+		for {
+			select {
+			case chunk, ok := <-events:
+				if !ok {
+					return errors.New("stream closed before " + substr)
+				}
+				if strings.Contains(chunk, substr) {
+					return nil
+				}
+			case <-sctx.Done():
+				return errors.New("timeout waiting for " + substr)
+			}
+		}
+	}
+	if err := waitFor("event: ready"); err != nil {
+		return err
+	}
+	start := time.Now()
+	if _, r, err := v.hold(ctx, v.load[41], st.ID, ids); err != nil || r.Status != 201 {
+		return fmt.Errorf("hold: %v %s", err, r)
+	}
+	if err := waitFor("event: seats"); err != nil {
+		return err
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		return fmt.Errorf("event took %s", d)
+	}
+	r, err := v.do(ctx, http.MethodGet, fmt.Sprintf("/api/showtimes/%d/events", st.ID), "", nil)
+	return expect(r, err, 401, "stream without token")
 }

@@ -44,6 +44,7 @@ type Service struct {
 	Cfg     config.Config
 	signKey ed25519.PrivateKey
 	Now     func() time.Time
+	live    *broker
 }
 
 // New builds the service.
@@ -52,7 +53,7 @@ func New(pool *pgxpool.Pool, cfg config.Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{DB: pool, Cfg: cfg, signKey: k, Now: time.Now}, nil
+	return &Service{DB: pool, Cfg: cfg, signKey: k, Now: time.Now, live: newBroker()}, nil
 }
 
 // PublicKey is the ticket verification key handed to gate scanners.

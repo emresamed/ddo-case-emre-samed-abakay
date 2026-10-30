@@ -48,6 +48,9 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap lets http.ResponseController reach Flush / SetWriteDeadline.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func (w *statusWriter) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
@@ -72,8 +75,12 @@ func (s *Server) observe(next http.Handler) http.Handler {
 		if rid == "" || len(rid) > 64 {
 			rid = requestID()
 		}
-		ctx, cancel := context.WithTimeout(context.WithValue(r.Context(), keyRequestID, rid), s.svc.Cfg.RequestTimeout)
-		defer cancel()
+		ctx := context.WithValue(r.Context(), keyRequestID, rid)
+		if !strings.HasSuffix(r.URL.Path, "/events") { // SSE streams are long-lived by design
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, s.svc.Cfg.RequestTimeout)
+			defer cancel()
+		}
 		r = r.WithContext(ctx)
 		sw := &statusWriter{ResponseWriter: w}
 		sw.Header().Set("X-Request-Id", rid)

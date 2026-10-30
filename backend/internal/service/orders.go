@@ -271,6 +271,9 @@ func (s *Service) CreateOrder(ctx context.Context, a Actor, req OrderRequest) (O
 		if _, err := tx.Exec(ctx, `UPDATE holds SET status = 'converted' WHERE id::text = $1`, req.HoldID); err != nil {
 			return err
 		}
+		if err := notifySeats(ctx, tx, p.showtime.ID); err != nil {
+			return err
+		}
 		return audit(ctx, tx, a.UserID, "order.create", "order", orderID, nil, map[string]any{
 			"channel": channel, "showtime_id": p.showtime.ID, "seats": seatIDs, "total": q.Total, "discount": q.Discount,
 			"gift": q.GiftApplied, "coupon": coupon,
@@ -521,6 +524,9 @@ func (s *Service) Refund(ctx context.Context, a Actor, orderID string, ticketIDs
 			if _, err := tx.Exec(ctx, `UPDATE coupons SET used_count = used_count - 1 WHERE code = $1 AND used_count > 0`, *coupon); err != nil {
 				return err
 			}
+		}
+		if err := notifySeats(ctx, tx, showtimeID); err != nil {
+			return err
 		}
 		newStatus := "partially_refunded"
 		if whole {

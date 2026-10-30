@@ -4,6 +4,7 @@ package httpapi
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -18,8 +19,9 @@ import (
 var openapiSpec []byte
 
 type Server struct {
-	svc *service.Service
-	log *slog.Logger
+	svc  *service.Service
+	log  *slog.Logger
+	stop <-chan struct{} // closed on shutdown: ends SSE streams
 }
 
 const (
@@ -34,8 +36,8 @@ const (
 // New builds the HTTP handler with all routes. Every /api route except
 // login and refresh requires a token; the role lists below are the RBAC
 // matrix (documented in README).
-func New(svc *service.Service, log *slog.Logger) http.Handler {
-	s := &Server{svc: svc, log: log}
+func New(svc *service.Service, log *slog.Logger, stop <-chan struct{}) http.Handler {
+	s := &Server{svc: svc, log: log, stop: stop}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", s.health)
@@ -60,6 +62,7 @@ func New(svc *service.Service, log *slog.Logger) http.Handler {
 	mux.Handle("GET /api/showtimes", s.auth(s.listShowtimes))
 	mux.Handle("GET /api/showtimes/{id}", s.auth(s.getShowtime))
 	mux.Handle("GET /api/showtimes/{id}/seats", s.auth(s.showtimeSeats))
+	mux.Handle("GET /api/showtimes/{id}/events", s.auth(s.seatEvents))
 	mux.Handle("GET /api/showtimes/{id}/suggest", s.auth(s.suggest, cust, box, mgr))
 	mux.Handle("GET /api/showtimes/{id}/integrity", s.auth(s.integrity, mgr, acct))
 
@@ -641,4 +644,61 @@ func (s *Server) live(w http.ResponseWriter, r *http.Request, a service.Actor) {
 		return
 	}
 	writeJSON(w, http.StatusOK, l)
+}
+
+// seatEvents streams "seats" events (Server-Sent Events) whenever the seat
+// map of the showtime changes; the client then refetches the map. The
+// browser uses fetch() streaming so the token stays in the Authorization
+// header instead of the URL.
+func (s *Server) seatEvents(w http.ResponseWriter, r *http.Request, a service.Actor) {
+	id, err := pathID(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if _, err := s.svc.GetShowtime(r.Context(), id); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	ch, cancel := s.svc.Subscribe(id)
+	defer cancel()
+	send := func(format string, args ...any) bool {
+		if _, err := fmt.Fprintf(w, format, args...); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
+	if !send("retry: 3000\nevent: ready\ndata: {\"showtime_id\":%d}\n\n", id) {
+		return
+	}
+	ping := time.NewTicker(15 * time.Second)
+	defer ping.Stop()
+	maxAge := time.NewTimer(30 * time.Minute) // clients reconnect; keeps connections from living forever
+	defer maxAge.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-s.stop:
+			return
+		case <-maxAge.C:
+			return
+		case <-ch:
+			if !send("event: seats\ndata: {\"showtime_id\":%d}\n\n", id) {
+				return
+			}
+		case <-ping.C:
+			if !send(": ping\n\n") {
+				return
+			}
+		}
+	}
 }

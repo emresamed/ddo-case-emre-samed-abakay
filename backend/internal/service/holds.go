@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -118,6 +119,9 @@ func (s *Service) CreateHold(ctx context.Context, a Actor, req HoldRequest) (Hol
 		if tag.RowsAffected() != int64(len(ids)) {
 			return E(http.StatusConflict, "SEAT_TAKEN", "one or more seats are no longer available")
 		}
+		if err := notifySeats(ctx, tx, req.ShowtimeID); err != nil {
+			return err
+		}
 		if len(violations) > 0 {
 			return audit(ctx, tx, a.UserID, "hold.single_seat_override", "hold", h.ID, nil, map[string]any{"seats": ids, "violations": violations})
 		}
@@ -195,15 +199,18 @@ func (s *Service) ExtendHold(ctx context.Context, a Actor, id string) (Hold, err
 // ReleaseHold frees the seats of a cart immediately.
 func (s *Service) ReleaseHold(ctx context.Context, a Actor, id string) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE holds SET status = 'released' WHERE id::text = $1 AND user_id = $2 AND status = 'active'`, id, a.UserID)
+		var showtimeID int64
+		err := tx.QueryRow(ctx, `UPDATE holds SET status = 'released' WHERE id::text = $1 AND user_id = $2 AND status = 'active' RETURNING showtime_id`, id, a.UserID).Scan(&showtimeID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
 		if err != nil {
 			return err
 		}
-		if tag.RowsAffected() == 0 {
-			return ErrNotFound
+		if _, err = tx.Exec(ctx, `UPDATE show_seats SET status = 'free', hold_id = NULL, held_until = NULL WHERE hold_id::text = $1 AND status = 'held'`, id); err != nil {
+			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE show_seats SET status = 'free', hold_id = NULL, held_until = NULL WHERE hold_id::text = $1 AND status = 'held'`, id)
-		return err
+		return notifySeats(ctx, tx, showtimeID)
 	})
 }
 
@@ -212,7 +219,7 @@ func (s *Service) ReleaseHold(ctx context.Context, a Actor, id string) error {
 // on checkouts in progress. Reads already treat expired holds as free, so
 // the sweeper only keeps the table tidy.
 func (s *Service) ExpireHolds(ctx context.Context) (int64, error) {
-	tag, err := s.DB.Exec(ctx, `
+	rows, err := s.DB.Query(ctx, `
 		WITH expired AS (
 			SELECT showtime_id, seat_id FROM show_seats
 			WHERE status = 'held' AND held_until <= now()
@@ -220,15 +227,36 @@ func (s *Service) ExpireHolds(ctx context.Context) (int64, error) {
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE show_seats ss SET status = 'free', hold_id = NULL, held_until = NULL
-		FROM expired e WHERE ss.showtime_id = e.showtime_id AND ss.seat_id = e.seat_id`)
+		FROM expired e WHERE ss.showtime_id = e.showtime_id AND ss.seat_id = e.seat_id
+		RETURNING ss.showtime_id`)
 	if err != nil {
 		return 0, err
+	}
+	var freed int64
+	shows := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		shows[id] = true
+		freed++
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for id := range shows {
+		if _, err := s.DB.Exec(ctx, `SELECT pg_notify($1, $2)`, seatChannel, strconv.FormatInt(id, 10)); err != nil {
+			return 0, err
+		}
 	}
 	if _, err := s.DB.Exec(ctx, `UPDATE holds SET status = 'expired' WHERE status = 'active' AND expires_at <= now()`); err != nil {
 		return 0, err
 	}
-	holdsExpired.Add(float64(tag.RowsAffected()))
-	return tag.RowsAffected(), nil
+	holdsExpired.Add(float64(freed))
+	return freed, nil
 }
 
 // RunSweeper calls ExpireHolds periodically until ctx is done.

@@ -266,6 +266,7 @@ async function viewShow(id) {
     <p class="lead">${esc(st.hall_name)} · ${esc(fmtDay(st.starts_at))} ${fmtTime(st.starts_at)} – ${fmtTime(st.ends_at)}</p>
     <div class="grid grid-8-4">
       <div class="card">
+        <div class="spread" style="margin-bottom:6px"><span></span><span id="livebadge" class="live">Bağlanıyor</span></div>
         <div class="screen">PERDE</div>
         <div class="seatmap"><div id="seats" class="seat-grid"></div></div>
         <div class="legend">
@@ -473,11 +474,60 @@ async function viewShow(id) {
 
   drawSeats();
   drawCart();
-  // keep the map fresh while the rush is on
-  const poll = setInterval(async () => {
-    if (!location.hash.startsWith('#/show/' + id)) { clearInterval(poll); clearInterval(state.timer); return; }
+  // live seat map: server-sent events over fetch() (the token stays in the
+  // Authorization header); falls back to polling if the stream breaks
+  const live = $app.querySelector('#livebadge');
+  let refreshing = false;
+  const refreshMap = async () => {
+    if (refreshing) return;
+    refreshing = true;
     try { state.map = await api('GET', `/api/showtimes/${id}/seats`); drawSeats(); } catch (e) { console.warn('seat refresh', e); }
-  }, 4000);
+    refreshing = false;
+  };
+  const onPage = () => location.hash.startsWith('#/show/' + id);
+  const ctrl = new AbortController();
+  let fallback = null;
+  const startPolling = () => {
+    if (fallback) return;
+    live.textContent = 'Yoklama (4 sn)';
+    fallback = setInterval(() => { if (!onPage()) { clearInterval(fallback); return; } refreshMap(); }, 4000);
+  };
+  (async function stream() {
+    while (onPage()) {
+      try {
+        const a = auth.get();
+        const res = await fetch(`/api/showtimes/${id}/events`, { headers: { Authorization: 'Bearer ' + a.access_token }, signal: ctrl.signal });
+        if (res.status === 401 && await refresh()) continue;
+        if (!res.ok || !res.body) throw new Error('stream ' + res.status);
+        live.textContent = 'Canlı';
+        live.className = 'live on';
+        if (fallback) { clearInterval(fallback); fallback = null; }
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf('\n\n')) >= 0) {
+            const ev = buf.slice(0, i);
+            buf = buf.slice(i + 2);
+            if (ev.includes('event: seats')) refreshMap();
+          }
+        }
+      } catch (e) {
+        if (ctrl.signal.aborted) return;
+        console.warn('seat stream', e);
+        live.className = 'live';
+        startPolling();
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  })();
+  const stopWatch = setInterval(() => {
+    if (!onPage()) { ctrl.abort(); clearInterval(state.timer); clearInterval(stopWatch); if (fallback) clearInterval(fallback); }
+  }, 1000);
 }
 
 function drawQR(el, text) {
