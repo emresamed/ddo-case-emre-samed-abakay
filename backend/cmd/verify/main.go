@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"sahnebilet/internal/client"
+	"sahnebilet/internal/domain/experiment"
 	"sahnebilet/internal/domain/gate"
 )
 
@@ -76,6 +77,22 @@ func main() {
 		}
 		v.tok[role] = t
 	}
+	// Repeated runs: earlier runs leave carts open on purpose (a hold is the
+	// state some checks assert). Release them so the 3-carts-per-customer
+	// limit does not leak from one run into the next.
+	if v.db != nil {
+		if _, err := v.db.Exec(ctx, `UPDATE show_seats SET status = 'free', hold_id = NULL, held_until = NULL
+			WHERE hold_id IN (SELECT h.id FROM holds h JOIN users u ON u.id = h.user_id
+				WHERE h.status = 'active' AND (u.email LIKE 'yuk1%' OR u.email = 'yuk200@sahnebilet.test'))`); err != nil {
+			fmt.Println("FATAL: cleanup:", err)
+			os.Exit(2)
+		}
+		if _, err := v.db.Exec(ctx, `UPDATE holds SET status = 'released' WHERE status = 'active' AND user_id IN
+			(SELECT id FROM users WHERE email LIKE 'yuk1%' OR email = 'yuk200@sahnebilet.test')`); err != nil {
+			fmt.Println("FATAL: cleanup:", err)
+			os.Exit(2)
+		}
+	}
 	for i := 101; i <= 200; i++ {
 		t, err := v.c.Login(ctx, fmt.Sprintf("yuk%03d@sahnebilet.test", i), pw)
 		if err != nil {
@@ -110,6 +127,7 @@ func main() {
 		{"AUDIT", "audit log records critical actions and is append-only", v.audit},
 		{"OPS", "metrics, OpenAPI, uniform error body", v.ops},
 		{"LIVE", "seat map changes are pushed over SSE (bonus)", v.live},
+		{"AB", "campaign A/B: stable assignment, offer in cart, z-test report (bonus)", v.ab},
 		{"WEB", "frontend is served and proxies the API", v.webCheck},
 	}
 	for _, ch := range checks {
@@ -187,8 +205,17 @@ func (v *V) do(ctx context.Context, method, path, tok string, body any) (client.
 	return v.c.Do(ctx, method, path, tok, body, "")
 }
 
+var keySeq atomic.Int64
+
+// newKey returns a unique Idempotency-Key. A timestamp alone is not enough:
+// on coarse clocks two goroutines get the same value, and the API then
+// (correctly) replays the first response for the second request.
+func newKey() string {
+	return fmt.Sprintf("verify-%d-%d", time.Now().UnixNano(), keySeq.Add(1))
+}
+
 func (v *V) doIdem(ctx context.Context, method, path, tok string, body any) (client.Resp, error) {
-	return v.c.Do(ctx, method, path, tok, body, fmt.Sprintf("verify-%d", time.Now().UnixNano()))
+	return v.c.Do(ctx, method, path, tok, body, newKey())
 }
 
 func expect(r client.Resp, err error, status int, what string) error {
@@ -201,9 +228,19 @@ func expect(r client.Resp, err error, status int, what string) error {
 	return nil
 }
 
-// showtime returns an unused upcoming showtime starting in [minAhead, maxAhead]
-// with no seats taken.
+// showtime returns an upcoming showtime starting in [minAhead, maxAhead],
+// not used by another check of this run, with no seats taken. Checks that do
+// not count seats can accept a partly sold show (busy), e.g. when the
+// simulator has already sold into every show of the next day.
 func (v *V) showtime(ctx context.Context, minAhead, maxAhead time.Duration) (client.Showtime, error) {
+	return v.pickShowtime(ctx, minAhead, maxAhead, false)
+}
+
+func (v *V) busyShowtime(ctx context.Context, minAhead, maxAhead time.Duration) (client.Showtime, error) {
+	return v.pickShowtime(ctx, minAhead, maxAhead, true)
+}
+
+func (v *V) pickShowtime(ctx context.Context, minAhead, maxAhead time.Duration, busy bool) (client.Showtime, error) {
 	from := time.Now().Add(minAhead).UTC().Format(time.RFC3339)
 	to := time.Now().Add(maxAhead).UTC().Format(time.RFC3339)
 	cursor := ""
@@ -220,7 +257,7 @@ func (v *V) showtime(ctx context.Context, minAhead, maxAhead time.Duration) (cli
 			return client.Showtime{}, err
 		}
 		for _, st := range p.Items {
-			if !v.used[st.ID] && st.Taken == 0 && st.Capacity >= 80 {
+			if !v.used[st.ID] && st.Capacity >= 80 && (st.Taken == 0 || (busy && st.Taken*2 < st.Capacity)) {
 				v.used[st.ID] = true
 				return st, nil
 			}
@@ -447,30 +484,33 @@ func (v *V) f1(ctx context.Context) error {
 	if kinds["accessible"] == 0 || kinds["vip"] == 0 || kinds["blocked"] == 0 {
 		return fmt.Errorf("seat map lacks kinds: %v", kinds)
 	}
-	// find a free standard seat in hall 10 (simulator rarely uses far rows) and block / unblock it
-	r, err = v.do(ctx, http.MethodGet, fmt.Sprintf("/api/halls/%d/seats", h.Items[len(h.Items)-1].ID), v.tok["mgr"], nil)
-	if err := expect(r, err, 200, "hall seats"); err != nil {
-		return err
-	}
-	_ = r.Decode(&s)
-	var target int64
-	for _, x := range s.Items {
-		if x.Kind == "standard" && x.Row == 1 && x.Col == 1 {
-			target = x.ID
+	// Block a broken seat and put it back. A seat with a ticket or hold in an
+	// upcoming show must be refused with 409 SEAT_IN_USE, so walk the halls
+	// (last first, front row first) until a seat that is free everywhere.
+	refused := 0
+	for hi := len(h.Items) - 1; hi >= 0; hi-- {
+		r, err = v.do(ctx, http.MethodGet, fmt.Sprintf("/api/halls/%d/seats", h.Items[hi].ID), v.tok["mgr"], nil)
+		if err := expect(r, err, 200, "hall seats"); err != nil {
+			return err
+		}
+		_ = r.Decode(&s)
+		for _, x := range s.Items {
+			if x.Kind != "standard" {
+				continue
+			}
+			r, err = v.do(ctx, http.MethodPatch, fmt.Sprintf("/api/seats/%d", x.ID), v.tok["mgr"], map[string]string{"kind": "blocked"})
+			if err == nil && r.Status == 409 && r.ErrCode() == "SEAT_IN_USE" {
+				refused++
+				continue
+			}
+			if err := expect(r, err, 200, "block seat"); err != nil {
+				return err
+			}
+			r, err = v.do(ctx, http.MethodPatch, fmt.Sprintf("/api/seats/%d", x.ID), v.tok["mgr"], map[string]string{"kind": "standard"})
+			return expect(r, err, 200, "unblock seat")
 		}
 	}
-	if target == 0 {
-		return errors.New("no seat 1/1")
-	}
-	r, err = v.do(ctx, http.MethodPatch, fmt.Sprintf("/api/seats/%d", target), v.tok["mgr"], map[string]string{"kind": "blocked"})
-	if r.Status == 409 {
-		return nil // seat already sold for an upcoming show: the guard works too
-	}
-	if err := expect(r, err, 200, "block seat"); err != nil {
-		return err
-	}
-	r, err = v.do(ctx, http.MethodPatch, fmt.Sprintf("/api/seats/%d", target), v.tok["mgr"], map[string]string{"kind": "standard"})
-	return expect(r, err, 200, "unblock seat")
+	return fmt.Errorf("every standard seat has an upcoming ticket (%d refused)", refused)
 }
 
 func (v *V) f2(ctx context.Context) error {
@@ -689,7 +729,7 @@ func (v *V) f5(ctx context.Context) error {
 }
 
 func (v *V) f6(ctx context.Context) error {
-	st, err := v.showtime(ctx, 90*time.Minute, 23*time.Hour)
+	st, err := v.busyShowtime(ctx, 90*time.Minute, 23*time.Hour)
 	if err != nil {
 		return err
 	}
@@ -1198,7 +1238,7 @@ func (v *V) t4(ctx context.Context) error {
 }
 
 func (v *V) t5(ctx context.Context) error {
-	st, err := v.showtime(ctx, 90*time.Minute, 23*time.Hour)
+	st, err := v.busyShowtime(ctx, 90*time.Minute, 23*time.Hour)
 	if err != nil {
 		return err
 	}
@@ -1338,7 +1378,7 @@ func (v *V) idem(ctx context.Context) error {
 		return err
 	}
 	tok := v.load[40]
-	key := fmt.Sprintf("idem-%d", time.Now().UnixNano())
+	key := newKey()
 	body := map[string]any{"showtime_id": st.ID, "seat_ids": ids}
 	r1, err := v.c.Do(ctx, http.MethodPost, "/api/holds", tok, body, key)
 	if err := expect(r1, err, 201, "first"); err != nil {
@@ -1360,23 +1400,40 @@ func (v *V) idem(ctx context.Context) error {
 }
 
 func (v *V) audit(ctx context.Context) error {
-	r, err := v.do(ctx, http.MethodGet, "/api/audit?limit=200", v.tok["acct"], nil)
-	if err := expect(r, err, 200, "audit"); err != nil {
-		return err
-	}
-	var a struct {
-		Items []struct {
-			Action string `json:"action"`
-		} `json:"items"`
-	}
-	_ = r.Decode(&a)
+	want := []string{"order.create", "order.refund", "seat.kind", "hold.single_seat_override", "gate.sync_conflicts"}
 	seen := map[string]bool{}
-	for _, x := range a.Items {
-		seen[x.Action] = true
+	before := int64(0)
+	for page := 0; page < 100; page++ {
+		path := "/api/audit?limit=200"
+		if before > 0 {
+			path += fmt.Sprintf("&before=%d", before)
+		}
+		r, err := v.do(ctx, http.MethodGet, path, v.tok["acct"], nil)
+		if err := expect(r, err, 200, "audit"); err != nil {
+			return err
+		}
+		var a struct {
+			Items []struct {
+				Action string `json:"action"`
+			} `json:"items"`
+			NextBefore int64 `json:"next_before"`
+		}
+		_ = r.Decode(&a)
+		for _, x := range a.Items {
+			seen[x.Action] = true
+		}
+		all := true
+		for _, w := range want {
+			all = all && seen[w]
+		}
+		if all || a.NextBefore == 0 {
+			break
+		}
+		before = a.NextBefore
 	}
-	for _, want := range []string{"order.create", "order.refund", "seat.kind", "hold.single_seat_override", "gate.sync_conflicts"} {
-		if !seen[want] {
-			return fmt.Errorf("audit log has no %s", want)
+	for _, w := range want {
+		if !seen[w] {
+			return fmt.Errorf("audit log has no %s", w)
 		}
 	}
 	if v.db != nil {
@@ -1503,4 +1560,66 @@ func (v *V) live(ctx context.Context) error {
 	}
 	r, err := v.do(ctx, http.MethodGet, fmt.Sprintf("/api/showtimes/%d/events", st.ID), "", nil)
 	return expect(r, err, 401, "stream without token")
+}
+
+// ab checks the campaign experiment: every customer gets the arm the pure
+// assignment function predicts, the report has both arms with consistent
+// numbers, and only accounting can read it.
+func (v *V) ab(ctx context.Context) error {
+	r, err := v.do(ctx, http.MethodGet, "/api/me", v.load[0], nil)
+	if err := expect(r, err, 200, "me"); err != nil {
+		return err
+	}
+	var me struct {
+		UserID int64 `json:"user_id"`
+	}
+	_ = r.Decode(&me)
+	r, err = v.do(ctx, http.MethodGet, "/api/offers/me", v.load[0], nil)
+	if err := expect(r, err, 200, "offer"); err != nil {
+		return err
+	}
+	var of struct {
+		Experiment string `json:"experiment"`
+		Variant    struct {
+			Name       string `json:"name"`
+			CouponCode string `json:"coupon_code"`
+		} `json:"variant"`
+	}
+	_ = r.Decode(&of)
+	want := []string{"A", "B"}[experiment.Assign(of.Experiment, me.UserID, 2)]
+	if of.Variant.Name != want || of.Variant.CouponCode == "" {
+		return fmt.Errorf("offer %+v, expected arm %s", of, want)
+	}
+	day := time.Now().In(time.FixedZone("TRT", 3*3600)).Format("2006-01-02")
+	r, err = v.do(ctx, http.MethodGet, "/api/reports/ab?from="+day+"&to="+day, v.tok["acct"], nil)
+	if err := expect(r, err, 200, "ab report"); err != nil {
+		return err
+	}
+	var rep struct {
+		Arms []struct {
+			Exposed        int     `json:"exposed"`
+			Converted      int     `json:"converted"`
+			Carts          int     `json:"carts"`
+			PaidCarts      int     `json:"paid_carts"`
+			Orders         int     `json:"orders"`
+			ConversionRate float64 `json:"conversion_rate"`
+		} `json:"arms"`
+		Comparison struct {
+			PValue float64 `json:"p_value"`
+		} `json:"comparison"`
+	}
+	_ = r.Decode(&rep)
+	if len(rep.Arms) != 2 || rep.Arms[0].Exposed+rep.Arms[1].Exposed == 0 {
+		return fmt.Errorf("report arms %+v", rep.Arms)
+	}
+	for _, a := range rep.Arms {
+		if a.Converted > a.Exposed || a.Converted > a.Orders || a.PaidCarts > a.Carts || a.Carts < a.Exposed || a.ConversionRate < 0 || a.ConversionRate > 1 {
+			return fmt.Errorf("inconsistent arm %+v", a)
+		}
+	}
+	if rep.Comparison.PValue < 0 || rep.Comparison.PValue > 1 {
+		return fmt.Errorf("p-value %v", rep.Comparison.PValue)
+	}
+	r, err = v.do(ctx, http.MethodGet, "/api/reports/ab?from="+day+"&to="+day, v.tok["customer"], nil)
+	return expect(r, err, 403, "customer reads the A/B report")
 }

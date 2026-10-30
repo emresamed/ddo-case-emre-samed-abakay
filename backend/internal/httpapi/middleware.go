@@ -270,11 +270,17 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeJSON(w, e.Status, map[string]any{"error": e})
 		return
 	}
+	rid, _ := r.Context().Value(keyRequestID).(string)
+	if errors.Is(err, context.Canceled) && r.Context().Err() != nil {
+		// the client went away; nobody reads this response (499 as in nginx)
+		s.log.Info("client closed request", "request_id", rid, "path", r.URL.Path)
+		w.WriteHeader(499)
+		return
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		writeJSON(w, http.StatusServiceUnavailable, errBody("TIMEOUT", "request timed out"))
 		return
 	}
-	rid, _ := r.Context().Value(keyRequestID).(string)
 	s.log.Error("request failed", "request_id", rid, "path", r.URL.Path, "error", err.Error())
 	writeJSON(w, http.StatusInternalServerError, errBody("INTERNAL", "internal error, request id "+rid))
 }

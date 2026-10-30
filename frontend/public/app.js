@@ -259,6 +259,9 @@ async function viewShow(id) {
     }
   }
   await loadMap();
+  if (role === 'customer') {
+    try { state.offer = await api('GET', '/api/offers/me'); } catch (e) { console.warn('offer', e); }
+  }
   const st = state.map.showtime;
   $app.innerHTML = `
     <a href="#/shows" class="small muted">← Seanslar</a>
@@ -355,6 +358,8 @@ async function viewShow(id) {
         <select data-cat="${sid}"><option value="full">Tam</option><option value="student" ${state.cats[sid] === 'student' ? 'selected' : ''}>Öğrenci</option></select></td></tr>`).join('')}
       </tbody></table>
       <label class="field">Mısır + içecek menüsü<input id="combos" type="number" min="0" max="10" value="${state.combos || 0}"></label>
+      ${state.offer ? `<div class="notice ok small">Size özel: <strong class="mono">${esc(state.offer.variant.coupon_code)}</strong> · ${esc(state.offer.variant.description)}
+        <button id="useOffer" class="btn btn-ghost btn-sm" style="margin-left:6px">Uygula</button></div>` : ''}
       <label class="field">Kupon kodu<input id="coupon" value="${esc(state.coupon || '')}" placeholder="HOSGELDIN10"></label>
       <label class="field">Hediye çeki<input id="gift" value="${esc(state.gift || '')}" placeholder="HC-DEMO-100"></label>
       <div id="quote" class="small"></div>
@@ -375,6 +380,12 @@ async function viewShow(id) {
     cartEl.querySelectorAll('select[data-cat]').forEach((s) => s.addEventListener('change', () => { state.cats[s.dataset.cat] = s.value; doQuote(); }));
     ['combos', 'coupon', 'gift'].forEach((k) => cartEl.querySelector('#' + k).addEventListener('change', (e) => { state[k] = e.target.value; doQuote(); }));
     cartEl.querySelector('#buy').addEventListener('click', doBuy);
+    const useOffer = cartEl.querySelector('#useOffer');
+    if (useOffer) useOffer.addEventListener('click', () => {
+      state.coupon = state.offer.variant.coupon_code;
+      cartEl.querySelector('#coupon').value = state.coupon;
+      doQuote();
+    });
     cartEl.querySelector('#extend').addEventListener('click', async () => {
       try { state.hold = await api('POST', `/api/holds/${state.hold.id}/extend`); store.set('hold:' + id, state.hold); drawCart('<div class="notice ok">Süre uzatıldı.</div>'); doQuote(); } catch (e) { cartEl.querySelector('#msg').innerHTML = failure(e); }
     });
@@ -846,7 +857,10 @@ async function viewReports() {
     <div id="rev" class="card table-wrap"></div>
     <hr class="sep">
     <h2>Dağıtımcı hasılat payı</h2>
-    <div id="dist" class="card table-wrap"></div>`;
+    <div id="dist" class="card table-wrap"></div>
+    <hr class="sep">
+    <h2>Kampanya A/B testi</h2>
+    <div id="ab" class="card table-wrap"></div>`;
   const run = async () => {
     const from = $app.querySelector('#from').value;
     const to = $app.querySelector('#to').value;
@@ -869,6 +883,37 @@ async function viewReports() {
         ${d.items.map((x) => `<tr><td>${esc(x.distributor)}</td><td>${esc(x.movie_title)}</td><td class="num">${x.week}</td><td class="num">${x.tickets}</td>
           <td class="num">${tl(x.net_revenue)}</td><td class="num">%${x.share_bp / 100}</td><td class="num">${tl(x.share_amount)}</td></tr>`).join('')}</tbody></table>`;
     } catch (e) { dist.innerHTML = failure(e); }
+    const ab = $app.querySelector('#ab');
+    ab.innerHTML = loading();
+    try {
+      const r = await api('GET', `/api/reports/ab?from=${from}&to=${to}`);
+      const [a, b] = r.arms;
+      const pct = (x) => (x * 100).toFixed(1) + '%';
+      const row = (label, f) => `<tr><td>${label}</td><td class="num">${f(a)}</td><td class="num">${f(b)}</td></tr>`;
+      const c = r.comparison;
+      const verdict = !c.enough_data ? '<div class="notice warn">Karar için veri yetersiz: her kolda en az 5 ödenen ve 5 terk edilen sepet gerekir.</div>'
+        : c.significant ? `<div class="notice ok">Anlamlı fark: <strong>${esc(c.winner)}</strong> kolu kazanıyor (p = ${c.p_value}, z = ${c.z_score}).</div>`
+          : `<div class="notice warn">Fark istatistiksel olarak anlamlı değil (p = ${c.p_value}, z = ${c.z_score}). Teste devam edin.</div>`;
+      ab.innerHTML = `
+        <div class="label" style="margin-bottom:8px">${esc(r.experiment.title)}</div>
+        <table><thead><tr><th>Metrik</th><th class="num">A · ${esc(a.variant.coupon_code)}</th><th class="num">B · ${esc(b.variant.coupon_code)}</th></tr></thead><tbody>
+          ${row('Teklif', (x) => esc(x.variant.description))}
+          ${row('Sepet açan müşteri', (x) => x.exposed)}
+          ${row('Satın alan müşteri', (x) => `${x.converted} (${pct(x.user_conversion_rate)})`)}
+          ${row('Açılan sepet', (x) => x.carts)}
+          ${row('Ödenen sepet', (x) => x.paid_carts)}
+          ${row('<strong>Sepet dönüşümü</strong>', (x) => `<strong>${pct(x.conversion_rate)}</strong>`)}
+          ${row('Sipariş', (x) => x.orders)}
+          ${row('Kuponu kullanan sipariş', (x) => x.coupon_uses)}
+          ${row('Ortalama sepet', (x) => tl(x.avg_order_value))}
+          ${row('Sipariş başına indirim maliyeti', (x) => tl(x.discount_per_order))}
+          ${row('Menü ekleme oranı', (x) => pct(x.combo_attach_rate))}
+          ${row('Müşteri başına gelir', (x) => tl(x.revenue_per_exposed_user))}
+          ${row('Toplam tahsilat', (x) => tl(x.revenue))}
+        </tbody></table>
+        <div style="margin-top:12px">${verdict}</div>
+        <p class="small muted">Sepet dönüşüm farkı (B − A): ${(c.absolute_lift * 100).toFixed(1)} puan. Deneme birimi sepettir: her açılan sepet bir deneme, ödenen sepet bir başarıdır; gişe satışları teste dahil değildir.</p>`;
+    } catch (e) { ab.innerHTML = failure(e); }
   };
   $app.querySelector('#go').addEventListener('click', run);
   run();

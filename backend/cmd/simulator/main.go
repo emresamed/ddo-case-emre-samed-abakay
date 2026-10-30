@@ -36,11 +36,23 @@ type sim struct {
 	rng      *rand.Rand
 	mu       sync.Mutex
 	users    []string // customer tokens
+	offers   []offer  // A/B campaign arm of each customer
 	box      string
 	gate     string
 	tickets  []string // QR codes of sold tickets for upcoming shows
 	stats    map[string]*atomic.Int64
 }
+
+// offer is the campaign arm the API assigned to a customer.
+type offer struct {
+	arm    string
+	coupon string
+}
+
+// abandonRate is the simulated share of carts left unpaid per campaign arm.
+// It is an assumption of the simulator, so the A/B report has an effect to
+// detect; real traffic decides this in production.
+var abandonRate = map[string]int{"A": 30, "B": 22}
 
 func envInt(k string, def int) int {
 	if v, err := strconv.Atoi(os.Getenv(k)); err == nil {
@@ -108,6 +120,18 @@ func (s *sim) login(ctx context.Context, n int) error {
 			return err
 		}
 		s.users = append(s.users, t)
+		var o struct {
+			Variant struct {
+				Name       string `json:"name"`
+				CouponCode string `json:"coupon_code"`
+			} `json:"variant"`
+		}
+		r, err := s.c.Do(ctx, http.MethodGet, "/api/offers/me", t, nil, "")
+		if err == nil && r.Status == 200 && r.Decode(&o) == nil {
+			s.offers = append(s.offers, offer{arm: o.Variant.Name, coupon: o.Variant.CouponCode})
+		} else {
+			s.offers = append(s.offers, offer{})
+		}
 	}
 	var err error
 	if s.box, err = s.c.Login(ctx, "gise@sahnebilet.test", password); err != nil {
@@ -140,16 +164,17 @@ func (s *sim) upcoming(ctx context.Context, token string, within time.Duration) 
 func (s *sim) step(ctx context.Context) {
 	switch x := s.pick(10); {
 	case x < 6:
-		s.customer(ctx, s.users[s.pick(len(s.users))], "")
+		i := s.pick(len(s.users))
+		s.customer(ctx, s.users[i], "", s.offers[i])
 	case x < 8:
-		s.customer(ctx, s.box, "box")
+		s.customer(ctx, s.box, "box", offer{})
 	default:
 		s.scan(ctx)
 	}
 }
 
 // customer: browse, ask for a suggestion, hold, then buy or abandon.
-func (s *sim) customer(ctx context.Context, token, kind string) {
+func (s *sim) customer(ctx context.Context, token, kind string, of offer) {
 	shows, err := s.upcoming(ctx, token, 8*time.Hour)
 	if err != nil || len(shows) == 0 {
 		s.stats["errors"].Add(1)
@@ -173,10 +198,14 @@ func (s *sim) customer(ctx context.Context, token, kind string) {
 	if !ok {
 		return
 	}
-	if kind != "box" && s.pick(10) < 3 {
+	rate := 30
+	if r, ok := abandonRate[of.arm]; ok {
+		rate = r
+	}
+	if kind != "box" && s.pick(100) < rate {
 		return // abandoned cart: the sweeper frees it after the TTL
 	}
-	if s.order(ctx, token, hold.ID, kind == "box") {
+	if s.order(ctx, token, hold.ID, of.coupon) {
 		if kind == "box" {
 			s.stats["box_office"].Add(1)
 		}
@@ -198,12 +227,16 @@ func (s *sim) hold(ctx context.Context, token string, showtime int64, seats []in
 	return h, r.Decode(&h) == nil
 }
 
-func (s *sim) order(ctx context.Context, token, holdID string, box bool) bool {
+func (s *sim) order(ctx context.Context, token, holdID, coupon string) bool {
 	body := map[string]any{"hold_id": holdID, "combos": s.pick(3)}
-	if s.pick(5) == 0 {
-		body["coupon_code"] = "HOSGELDIN10"
+	if coupon != "" && s.pick(10) < 7 {
+		body["coupon_code"] = coupon
 	}
 	r, err := s.c.Do(ctx, http.MethodPost, "/api/orders", token, body, randKey())
+	if err == nil && r.Status == http.StatusUnprocessableEntity && body["coupon_code"] != nil {
+		delete(body, "coupon_code") // e.g. below the coupon's minimum basket: pay without it
+		r, err = s.c.Do(ctx, http.MethodPost, "/api/orders", token, body, randKey())
+	}
 	if err != nil || r.Status != http.StatusCreated {
 		s.stats["order_fail"].Add(1)
 		return false
@@ -281,7 +314,7 @@ func (s *sim) rush(ctx context.Context, n int) {
 			if h, ok := s.hold(ctx, tok, st.ID, seats); ok {
 				won.Add(1)
 				s.stats["rush_won"].Add(1)
-				s.order(ctx, tok, h.ID, false)
+				s.order(ctx, tok, h.ID, s.offers[i%len(s.offers)].coupon)
 			} else {
 				s.stats["rush_lost"].Add(1)
 			}

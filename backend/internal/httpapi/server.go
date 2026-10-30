@@ -85,6 +85,8 @@ func New(svc *service.Service, log *slog.Logger, stop <-chan struct{}) http.Hand
 
 	mux.Handle("GET /api/reports/revenue", s.auth(s.revenue, acct))
 	mux.Handle("GET /api/reports/distributor", s.auth(s.distributor, acct))
+	mux.Handle("GET /api/reports/ab", s.auth(s.abReport, acct))
+	mux.Handle("GET /api/offers/me", s.auth(s.offer, cust))
 
 	mux.Handle("POST /api/schedule/generate", s.auth(s.generateSchedule, prog))
 	mux.Handle("GET /api/schedule/validate", s.auth(s.validateSchedule, prog, mgr))
@@ -701,4 +703,22 @@ func (s *Server) seatEvents(w http.ResponseWriter, r *http.Request, a service.Ac
 			}
 		}
 	}
+}
+
+func (s *Server) offer(w http.ResponseWriter, r *http.Request, a service.Actor) {
+	writeJSON(w, http.StatusOK, s.svc.OfferFor(a))
+}
+
+func (s *Server) abReport(w http.ResponseWriter, r *http.Request, a service.Actor) {
+	from, to, err := s.rangeQuery(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	rep, err := s.svc.ABReport(r.Context(), from, to)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
