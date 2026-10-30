@@ -92,9 +92,13 @@ func (s *Server) observe(next http.Handler) http.Handler {
 					writeJSON(sw, http.StatusInternalServerError, errBody("INTERNAL", "internal error"))
 				}
 			}
-			route := r.Pattern
-			if route == "" {
-				route = "unmatched"
+			// The mux records the pattern on the request copy it receives
+			// (withActorSlot clones the request), so ask the mux directly.
+			route := "unmatched"
+			if s.mux != nil {
+				if _, p := s.mux.Handler(r); p != "" && p != "/" {
+					route = p
+				}
 			}
 			status := sw.status
 			if status == 0 {

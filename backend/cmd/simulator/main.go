@@ -97,7 +97,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("\npremiere rush: %d customers on showtime %d (%s)\n", res.Customers, res.ShowtimeID, res.Movie)
-		fmt.Printf("  carts won %d, seat taken / busy %d, single-seat rule %d, other %d\n", res.Won, res.Taken, res.Rule, res.Other)
+		fmt.Printf("  carts won %d, seat taken / busy %d, single-seat rule %d, other status %d, no answer (network) %d\n", res.Won, res.Taken, res.Rule, res.Other, res.Network)
 		fmt.Printf("  orders %d, seats sold %d, took %s\n", res.Orders, res.SeatsSold, res.Took.Round(time.Millisecond))
 		fmt.Printf("  integrity: sold seats %d = valid tickets %d, duplicates %d -> ok=%v\n", res.Integrity.SoldSeats, res.Integrity.ValidTickets, res.Integrity.Duplicates, res.Integrity.OK)
 		if !res.Integrity.OK || res.Other > 0 {
@@ -318,7 +318,8 @@ type RushResult struct {
 	Won        int64
 	Taken      int64 // 409: seat taken, busy, too many carts
 	Rule       int64 // 422: single-seat rule
-	Other      int64 // anything else (must be 0)
+	Other      int64 // any other HTTP status (must be 0)
+	Network    int64 // request never got an HTTP answer (client/OS limits)
 	Orders     int64
 	SeatsSold  int64
 	Took       time.Duration
@@ -337,7 +338,7 @@ func (s *sim) rushAndLog(ctx context.Context, n int) {
 		return
 	}
 	s.log.Info("rush finished", "showtime_id", res.ShowtimeID, "customers", res.Customers, "won", res.Won, "taken", res.Taken,
-		"rule", res.Rule, "other", res.Other, "seats_sold", res.SeatsSold, "took_ms", res.Took.Milliseconds(), "integrity_ok", res.Integrity.OK)
+		"rule", res.Rule, "other", res.Other, "network", res.Network, "seats_sold", res.SeatsSold, "took_ms", res.Took.Milliseconds(), "integrity_ok", res.Integrity.OK)
 }
 
 // rush is the premiere morning: n customers open the same show at the same
@@ -419,7 +420,7 @@ func (s *sim) rush(ctx context.Context, n int) (RushResult, error) {
 			r, err := s.c.Do(ctx, http.MethodPost, "/api/holds", tok, map[string]any{"showtime_id": st.ID, "seat_ids": seats}, randKey())
 			switch {
 			case err != nil:
-				atomic.AddInt64(&res.Other, 1)
+				atomic.AddInt64(&res.Network, 1)
 			case r.Status == http.StatusCreated:
 				atomic.AddInt64(&res.Won, 1)
 				s.stats["rush_won"].Add(1)

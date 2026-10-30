@@ -22,6 +22,7 @@ type Server struct {
 	svc  *service.Service
 	log  *slog.Logger
 	stop <-chan struct{} // closed on shutdown: ends SSE streams
+	mux  *http.ServeMux
 }
 
 const (
@@ -102,6 +103,7 @@ func New(svc *service.Service, log *slog.Logger, stop <-chan struct{}) http.Hand
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errBody("NOT_FOUND", "no route for "+r.Method+" "+r.URL.Path))
 	})
+	s.mux = mux
 	return s.observe(withActorSlot(mux))
 }
 
