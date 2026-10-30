@@ -29,6 +29,8 @@ Migrasyonlar ve seed API açılırken otomatik çalışır; elle yapılacak bir 
 | `make chaos` | PostgreSQL'i durdurur, API'nin bozulduğunu (503) ve DB geri gelince yeniden başlatma gerekmeden toparlandığını gösterir |
 | `make test` | Birim ve entegrasyon testleri (entegrasyon testleri için `TEST_DATABASE_URL` gerekir) |
 
+**CI kanıtı:** GitHub Actions'taki `e2e` işi her push'ta temiz bir Linux makinede `docker compose up --build` + `make verify` (21/21 PASS) + `make chaos` (PASS) çalıştırır; `test` işi lint, race detector'lı testler ve kapsama kapısını (domain ≥ %70, şu an %97,7) koşturur.
+
 Demo hesapların (her rol için bir hesap, parola `Demo1234!`) listesi ve elle deneme senaryoları için: [TESTING.md](TESTING.md).
 
 ## Mimari
@@ -151,7 +153,7 @@ Her sanal kullanıcı aynı anda merkeze yakın 1–4 koltuk seçer, tutar ve sa
 | Çift satış (`/integrity`) | **0** (`ok: true`) |
 | TCP seviyesinde başarısız istek | 278 (%13,9), aşağıdaki nota bakın |
 
-> **Ölçüm ortamı ve dürüst not:** Bu sonuçlar Windows 11 dizüstü bilgisayarda, API ve PostgreSQL 16 aynı makinede yerel süreç olarak çalışırken alındı (teslim günü Docker Desktop kurulumu yönetici onayında bekliyordu). 278 istek sunucuya hiç ulaşmadı: Windows'un listen backlog'u, 2000 bağlantının aynı milisaniyede açılmasını kaldırmadı. API logunda bu istekler görünmüyor; API yalnızca 201/409/422 döndürdü. Linux'ta (Docker) backlog çok daha büyük olduğu için bu kayıp beklenmez. k6 betiği ağ hatalarını (`hold_network_error`) API hatalarından (`hold_other`, eşik 0) ayrı sayar.
+> **Ölçüm ortamı ve dürüst not:** Bu sonuçlar Windows 11 dizüstü bilgisayarda, API ve PostgreSQL 16 aynı makinede yerel süreç olarak çalışırken alındı (k6 ölçümü için; Docker kurulumu ve uçtan uca `make verify` ise CI'da Linux üzerinde doğrulandı). 278 istek sunucuya hiç ulaşmadı: Windows'un listen backlog'u, 2000 bağlantının aynı milisaniyede açılmasını kaldırmadı. API logunda bu istekler görünmüyor; API yalnızca 201/409/422 döndürdü. Linux'ta (Docker) backlog çok daha büyük olduğu için bu kayıp beklenmez. k6 betiği ağ hatalarını (`hold_network_error`) API hatalarından (`hold_other`, eşik 0) ayrı sayar.
 
 ### Dizinler: `EXPLAIN (ANALYZE)`, ham çıktı [docs/explain-analyze.txt](docs/explain-analyze.txt)
 
