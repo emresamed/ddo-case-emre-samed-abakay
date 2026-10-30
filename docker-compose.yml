@@ -61,7 +61,8 @@ services:
       SEED: ${SEED:-42}
       SIM_RATE: ${SIM_RATE:-2}
       SIM_RUSH_EVERY: ${SIM_RUSH_EVERY:-10}
-      SIM_RUSH_USERS: ${SIM_RUSH_USERS:-150}
+      SIM_RUSH_USERS: ${SIM_RUSH_USERS:-2000}
+      SIM_USERS: ${SIM_USERS:-200}
     depends_on:
       api:
         condition: service_healthy

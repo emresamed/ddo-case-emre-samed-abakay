@@ -2,7 +2,7 @@
 # needs a local Go toolchain.
 COMPOSE ?= docker compose
 
-.PHONY: up down logs verify load reset-demo test cover chaos env
+.PHONY: up down logs verify load rush reset-demo test cover chaos env
 
 env:
 	@test -f .env || cp .env.example .env
@@ -27,6 +27,12 @@ verify: env
 load: env
 	$(COMPOSE) up --build -d --wait db api
 	$(COMPOSE) --profile load run --rm k6
+
+# One premiere rush from the simulator (SIM_RUSH_USERS customers, default
+# 2000) with a no-double-sale check at the end.
+rush: env
+	$(COMPOSE) up --build -d --wait db api
+	$(COMPOSE) run --rm --build -e SIM_MODE=rush simulator
 
 # Back to the initial seed (same SEED => same data).
 reset-demo: env

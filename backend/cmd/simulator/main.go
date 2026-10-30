@@ -7,13 +7,17 @@
 //	API_URL      default http://api:8080
 //	SEED         rng seed; the same seed yields the same sequence of choices
 //	SIM_RATE     actions per second in steady mode (default 2)
-//	SIM_RUSH_EVERY  start a rush every N minutes, 0 = never (default 10)
-//	SIM_RUSH_USERS  concurrent customers in a rush (default 150)
+//	SIM_USERS    customer accounts to log in (default 200)
+//	SIM_RUSH_EVERY  start a premiere rush every N minutes, 0 = never (default 10)
+//	SIM_RUSH_USERS  concurrent customers in a rush (default 2000)
+//	SIM_MODE     "steady" (default) or "rush": run one rush, print the
+//	             result and exit non-zero if the no-double-sale check fails
 package main
 
 import (
 	"context"
 	"fmt"
+	"sort"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -36,6 +40,7 @@ type sim struct {
 	rng      *rand.Rand
 	mu       sync.Mutex
 	users    []string // customer tokens
+	mgr      string   // hall manager token, for the integrity check
 	offers   []offer  // A/B campaign arm of each customer
 	box      string
 	gate     string
@@ -78,11 +83,28 @@ func main() {
 		log.Error("api not reachable", "error", err.Error())
 		os.Exit(1)
 	}
-	if err := s.login(ctx, envInt("SIM_USERS", 40)); err != nil {
+	if err := s.login(ctx, envInt("SIM_USERS", 200)); err != nil {
 		log.Error("login failed", "error", err.Error())
 		os.Exit(1)
 	}
 	log.Info("simulator started", "seed", seed, "users", len(s.users))
+	rushUsers := envInt("SIM_RUSH_USERS", 2000)
+
+	if os.Getenv("SIM_MODE") == "rush" {
+		res, err := s.rush(ctx, rushUsers)
+		if err != nil {
+			log.Error("rush failed", "error", err.Error())
+			os.Exit(1)
+		}
+		fmt.Printf("\npremiere rush: %d customers on showtime %d (%s)\n", res.Customers, res.ShowtimeID, res.Movie)
+		fmt.Printf("  carts won %d, seat taken / busy %d, single-seat rule %d, other %d\n", res.Won, res.Taken, res.Rule, res.Other)
+		fmt.Printf("  orders %d, seats sold %d, took %s\n", res.Orders, res.SeatsSold, res.Took.Round(time.Millisecond))
+		fmt.Printf("  integrity: sold seats %d = valid tickets %d, duplicates %d -> ok=%v\n", res.Integrity.SoldSeats, res.Integrity.ValidTickets, res.Integrity.Duplicates, res.Integrity.OK)
+		if !res.Integrity.OK || res.Other > 0 {
+			os.Exit(1)
+		}
+		return
+	}
 
 	rate := envInt("SIM_RATE", 2)
 	rushEvery := envInt("SIM_RUSH_EVERY", 10)
@@ -92,7 +114,7 @@ func main() {
 	if rushEvery > 0 {
 		t := time.NewTicker(time.Duration(rushEvery) * time.Minute)
 		rush = t.C
-		go s.rush(ctx, envInt("SIM_RUSH_USERS", 150)) // one rush at start, visible right away
+		go s.rushAndLog(ctx, rushUsers) // one rush at start, visible right away
 	}
 	for {
 		select {
@@ -102,7 +124,7 @@ func main() {
 		case <-tick.C:
 			go s.step(ctx)
 		case <-rush:
-			go s.rush(ctx, envInt("SIM_RUSH_USERS", 150))
+			go s.rushAndLog(ctx, rushUsers)
 		case <-report.C:
 			out := []any{}
 			for k, v := range s.stats {
@@ -135,6 +157,9 @@ func (s *sim) login(ctx context.Context, n int) error {
 	}
 	var err error
 	if s.box, err = s.c.Login(ctx, "gise@sahnebilet.test", password); err != nil {
+		return err
+	}
+	if s.mgr, err = s.c.Login(ctx, "amir@sahnebilet.test", password); err != nil {
 		return err
 	}
 	s.gate, err = s.c.Login(ctx, "kapi@sahnebilet.test", password)
@@ -285,43 +310,143 @@ func (s *sim) scan(ctx context.Context) {
 	s.stats["scan"].Add(1)
 }
 
-// rush: many customers try to hold the same best seats of one show at once.
-func (s *sim) rush(ctx context.Context, n int) {
-	shows, err := s.upcoming(ctx, s.users[0], 48*time.Hour)
-	if err != nil || len(shows) == 0 {
+// RushResult summarises one premiere rush.
+type RushResult struct {
+	ShowtimeID int64
+	Movie      string
+	Customers  int
+	Won        int64
+	Taken      int64 // 409: seat taken, busy, too many carts
+	Rule       int64 // 422: single-seat rule
+	Other      int64 // anything else (must be 0)
+	Orders     int64
+	SeatsSold  int64
+	Took       time.Duration
+	Integrity  struct {
+		SoldSeats    int  `json:"sold_seats"`
+		ValidTickets int  `json:"valid_tickets"`
+		Duplicates   int  `json:"duplicate_seats"`
+		OK           bool `json:"ok"`
+	}
+}
+
+func (s *sim) rushAndLog(ctx context.Context, n int) {
+	res, err := s.rush(ctx, n)
+	if err != nil {
+		s.log.Error("rush failed", "error", err.Error())
 		return
 	}
-	st := shows[s.pick(len(shows))]
-	r, err := s.c.Do(ctx, http.MethodGet, fmt.Sprintf("/api/showtimes/%d/suggest?n=2", st.ID), s.users[0], nil, "")
+	s.log.Info("rush finished", "showtime_id", res.ShowtimeID, "customers", res.Customers, "won", res.Won, "taken", res.Taken,
+		"rule", res.Rule, "other", res.Other, "seats_sold", res.SeatsSold, "took_ms", res.Took.Milliseconds(), "integrity_ok", res.Integrity.OK)
+}
+
+// rush is the premiere morning: n customers open the same show at the same
+// instant and each grabs 1-4 adjacent seats in the middle rows, where
+// everybody wants to sit. Winners pay immediately. Afterwards the hall
+// manager's integrity endpoint must report no double sale.
+func (s *sim) rush(ctx context.Context, n int) (RushResult, error) {
+	var res RushResult
+	shows, err := s.upcoming(ctx, s.users[0], 10*24*time.Hour)
+	if err != nil {
+		return res, err
+	}
+	var st client.Showtime
+	for _, x := range shows {
+		if x.Taken == 0 && x.StartsAt.After(time.Now().Add(24*time.Hour)) && x.Capacity > st.Capacity {
+			st = x // the biggest untouched show at least a day ahead
+		}
+	}
+	if st.ID == 0 {
+		if len(shows) == 0 {
+			return res, fmt.Errorf("no upcoming showtime")
+		}
+		st = shows[s.pick(len(shows))]
+	}
+	r, err := s.c.Do(ctx, http.MethodGet, fmt.Sprintf("/api/showtimes/%d/seats", st.ID), s.users[0], nil, "")
 	if err != nil || r.Status != 200 {
-		return
+		return res, fmt.Errorf("seat map: %v %s", err, r)
 	}
-	var sg struct {
-		Items []client.Suggestion `json:"items"`
+	var m client.SeatMap
+	if err := r.Decode(&m); err != nil {
+		return res, err
 	}
-	if r.Decode(&sg) != nil || len(sg.Items) == 0 {
-		return
+	// candidate blocks: 1-4 adjacent sellable seats in the middle 40% of rows
+	byRow := map[int][]client.Seat{}
+	maxRow := 0
+	for _, x := range m.Seats {
+		if x.Kind == "standard" || x.Kind == "vip" {
+			byRow[x.Row] = append(byRow[x.Row], x)
+		}
+		maxRow = max(maxRow, x.Row)
 	}
-	s.log.Info("rush started", "showtime_id", st.ID, "movie", st.MovieTitle, "customers", n)
+	var blocks [][]int64
+	for row := maxRow * 4 / 10; row <= maxRow*8/10; row++ {
+		seats := byRow[row]
+		sort.Slice(seats, func(i, j int) bool { return seats[i].Col < seats[j].Col })
+		for size := 1; size <= 4; size++ {
+			for i := 0; i+size <= len(seats); i++ {
+				if seats[i+size-1].Col-seats[i].Col != size-1 {
+					continue // the block would cross the aisle
+				}
+				ids := make([]int64, size)
+				for k := range ids {
+					ids[k] = seats[i+k].ID
+				}
+				blocks = append(blocks, ids)
+			}
+		}
+	}
+	if len(blocks) == 0 {
+		return res, fmt.Errorf("no seats to fight for")
+	}
+	choice := make([]int, n)
+	for i := range choice {
+		choice[i] = s.pick(len(blocks)) // seeded: the same SEED replays the same rush
+	}
+	res.ShowtimeID, res.Movie, res.Customers = st.ID, st.MovieTitle, n
+	s.log.Info("rush started", "showtime_id", st.ID, "movie", st.MovieTitle, "customers", n, "candidate_blocks", len(blocks))
+
 	var wg sync.WaitGroup
-	var won atomic.Int64
+	gate := make(chan struct{})
+	start := time.Now()
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			tok := s.users[i%len(s.users)]
-			seats := sg.Items[i%len(sg.Items)].SeatIDs
-			if h, ok := s.hold(ctx, tok, st.ID, seats); ok {
-				won.Add(1)
+			seats := blocks[choice[i]]
+			<-gate
+			r, err := s.c.Do(ctx, http.MethodPost, "/api/holds", tok, map[string]any{"showtime_id": st.ID, "seat_ids": seats}, randKey())
+			switch {
+			case err != nil:
+				atomic.AddInt64(&res.Other, 1)
+			case r.Status == http.StatusCreated:
+				atomic.AddInt64(&res.Won, 1)
 				s.stats["rush_won"].Add(1)
-				s.order(ctx, tok, h.ID, s.offers[i%len(s.offers)].coupon)
-			} else {
+				var h client.Hold
+				if r.Decode(&h) == nil && s.order(ctx, tok, h.ID, s.offers[i%len(s.offers)].coupon) {
+					atomic.AddInt64(&res.Orders, 1)
+					atomic.AddInt64(&res.SeatsSold, int64(len(seats)))
+				}
+			case r.Status == http.StatusConflict:
+				atomic.AddInt64(&res.Taken, 1)
 				s.stats["rush_lost"].Add(1)
+			case r.Status == http.StatusUnprocessableEntity:
+				atomic.AddInt64(&res.Rule, 1)
+				s.stats["rush_lost"].Add(1)
+			default:
+				atomic.AddInt64(&res.Other, 1)
 			}
 		}(i)
 	}
+	close(gate)
 	wg.Wait()
-	s.log.Info("rush finished", "showtime_id", st.ID, "winners", won.Load(), "contested_blocks", len(sg.Items))
+	res.Took = time.Since(start)
+	r, err = s.c.Do(ctx, http.MethodGet, fmt.Sprintf("/api/showtimes/%d/integrity", st.ID), s.mgr, nil, "")
+	if err != nil || r.Status != 200 {
+		return res, fmt.Errorf("integrity: %v %s", err, r)
+	}
+	return res, r.Decode(&res.Integrity)
 }
 
 func randKey() string {
