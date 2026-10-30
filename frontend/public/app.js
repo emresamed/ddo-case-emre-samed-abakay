@@ -50,6 +50,8 @@ const ERRORS = {
   INVALID_CREDENTIALS: 'E-posta veya parola hatalı.',
   FORBIDDEN: 'Bu işlem için yetkiniz yok.',
 };
+const STATUS = { valid: 'geçerli', used: 'kullanıldı', refunded: 'iade edildi', paid: 'ödendi', partially_refunded: 'kısmi iade' };
+const st = (s) => STATUS[s] || s;
 const errText = (e) => ERRORS[e.code] || e.message || 'Beklenmeyen hata';
 
 // ---------- API client with token refresh
@@ -495,14 +497,14 @@ async function viewOrder(oid) {
   $app.innerHTML = `
     <a href="#/orders" class="small muted">← Siparişler</a>
     <h1>${esc(o.movie_title)}</h1>
-    <p class="lead">${esc(o.hall_name)} · ${esc(fmtDay(o.starts_at))} ${fmtTime(o.starts_at)} · <span class="tag">${esc(o.channel === 'online' ? 'online' : 'gişe')}</span> <span class="tag ${o.status === 'paid' ? 'ok' : 'warn'}">${esc(o.status)}</span></p>
+    <p class="lead">${esc(o.hall_name)} · ${esc(fmtDay(o.starts_at))} ${fmtTime(o.starts_at)} · <span class="tag">${esc(o.channel === 'online' ? 'online' : 'gişe')}</span> <span class="tag ${o.status === 'paid' ? 'ok' : 'warn'}">${esc(st(o.status))}</span></p>
     <div class="grid grid-7-5">
       <div class="card">
         <h2>Biletler</h2>
         <div id="tix" class="stack">${tix.map((t) => `
           <div class="spread" style="border-top:1px solid var(--border);padding-top:12px">
             <div><strong>${esc(t.seat_label)}</strong> · ${t.category === 'student' ? 'Öğrenci' : 'Tam'} · ${tl(t.paid)}
-              <div><span class="tag ${t.status === 'valid' ? 'ok' : t.status === 'used' ? '' : 'bad'}">${esc(t.status)}</span></div>
+              <div><span class="tag ${t.status === 'valid' ? 'ok' : t.status === 'used' ? '' : 'bad'}">${esc(st(t.status))}</span></div>
               ${canRefund && t.status === 'valid' ? `<button class="btn btn-ghost btn-sm" data-refund="${t.ticket_id}" style="margin-top:8px">Bu bileti iade et</button>` : ''}
             </div>
             <div class="qr" data-qr="${t.ticket_id}" ${t.status !== 'valid' ? 'hidden' : ''}></div>
@@ -554,7 +556,7 @@ async function viewOrders(cursor = '') {
       <table><thead><tr><th>Tarih</th><th>Gösterim</th><th>Kanal</th><th>Durum</th><th class="num">Bilet</th><th class="num">Tutar</th></tr></thead><tbody>
       ${p.items.map((o) => `<tr class="click" data-id="${o.id}"><td>${fmtDT(o.created_at)}</td>
         <td><strong>${esc(o.movie_title)}</strong><br><span class="small muted">${esc(o.hall_name)} · ${fmtDT(o.starts_at)}</span></td>
-        <td>${o.channel === 'online' ? 'online' : 'gişe'}</td><td><span class="tag ${o.status === 'paid' ? 'ok' : 'warn'}">${esc(o.status)}</span></td>
+        <td>${o.channel === 'online' ? 'online' : 'gişe'}</td><td><span class="tag ${o.status === 'paid' ? 'ok' : 'warn'}">${esc(st(o.status))}</span></td>
         <td class="num">${o.lines.filter((l) => l.kind === 'ticket').length}</td><td class="num">${tl(o.total)}</td></tr>`).join('')}
       </tbody></table>`}
       ${p.next_cursor ? '<button id="more" class="btn btn-ghost btn-sm" style="margin-top:12px">Daha eski</button>' : ''}
@@ -802,7 +804,7 @@ async function viewReports() {
     rev.innerHTML = loading(); dist.innerHTML = loading();
     try {
       const r = await api('GET', `/api/reports/revenue?from=${from}&to=${to}`);
-      const row = (x, bold) => `<tr${bold ? ' style="font-weight:600"' : ''}><td>${esc(x.movie_title)}</td><td>${esc(x.channel === 'box_office' ? 'gişe' : x.channel)}</td>
+      const row = (x, bold) => `<tr${bold ? ' style="font-weight:600"' : ''}><td>${bold ? 'Toplam' : esc(x.movie_title)}</td><td>${bold ? 'tüm kanallar' : esc(x.channel === 'box_office' ? 'gişe' : x.channel)}</td>
         <td class="num">${x.tickets}</td><td class="num">${x.combos}</td><td class="num">${tl(x.gross)}</td><td class="num">${tl(x.discount)}</td><td class="num">${tl(x.paid)}</td>
         <td class="num">${tl(x.net)}</td><td class="num">${tl(x.ent_tax)}</td><td class="num">${tl(x.vat)}</td><td class="num">${x.refunded_count} · ${tl(x.refunded_paid)}</td></tr>`;
       rev.innerHTML = r.rows.length === 0 ? empty('Bu aralıkta satış yok.') : `<table><thead><tr><th>Film</th><th>Kanal</th><th class="num">Bilet</th><th class="num">Menü</th><th class="num">Brüt</th>
@@ -900,7 +902,8 @@ async function viewGate() {
       const st = await api('POST', '/api/gate/sync', { gate_id: gs.gateId, scans: gs.pending });
       gs.pending = []; gs.used = st.used; gs.revoked = st.revoked; gs.publicKey = st.public_key; gs.lastSync = new Date().toISOString();
       key = null; save(); dev();
-      msg.innerHTML = st.conflicts.length ? `<div class="notice warn">${st.conflicts.length} çakışma salon amirine bildirildi: ${st.conflicts.map((c) => esc(c.kind)).join(', ')}</div>` : '<div class="notice ok">Senkron tamam, çakışma yok.</div>';
+      const conf = st.conflicts || [];
+      msg.innerHTML = conf.length ? `<div class="notice warn">${conf.length} çakışma salon amirine bildirildi: ${conf.map((c) => esc(c.kind)).join(', ')}</div>` : '<div class="notice ok">Senkron tamam, çakışma yok.</div>';
     } catch (e) { msg.innerHTML = failure(e); }
   }
 

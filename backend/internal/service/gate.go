@@ -97,7 +97,7 @@ func (s *Service) Scan(ctx context.Context, a Actor, gateID, code string) (ScanR
 type GateState struct {
 	PublicKey string          `json:"public_key"` // base64 raw Ed25519 public key
 	gate.SyncState
-	Conflicts []gate.Conflict `json:"conflicts,omitempty"`
+	Conflicts []gate.Conflict `json:"conflicts"`
 }
 
 // State returns used and refunded tickets of shows around now, so a scanner
@@ -108,7 +108,7 @@ func (s *Service) State(ctx context.Context) (GateState, error) {
 	if err != nil {
 		return GateState{}, err
 	}
-	st := GateState{PublicKey: b64std(s.PublicKey())}
+	st := GateState{PublicKey: b64std(s.PublicKey()), Conflicts: []gate.Conflict{}}
 	st.Used, st.Revoked = []string{}, []string{}
 	for rows.Next() {
 		var id, status string

@@ -32,9 +32,9 @@ jobs:
       - name: Build
         run: go build ./...
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.15.0
           working-directory: backend
       - name: Test (race detector, integration tests against PostgreSQL)
         run: go test -race -count=1 -coverpkg=./internal/... -coverprofile=coverage.out ./...

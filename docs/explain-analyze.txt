@@ -1,0 +1,81 @@
+=== Q1 keyset showtimes WITH index
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.011..0.016 rows=51 loops=1)
+   Buffers: shared hit=3
+   ->  Index Only Scan using showtimes_starts_idx on showtimes (actual time=0.010..0.013 rows=51 loops=1)
+         Index Cond: ((starts_at >= now()) AND (starts_at < (now() + '14 days'::interval)) AND (ROW(starts_at, id) > ROW((now() + '3 days'::interval), 0)))
+         Heap Fetches: 0
+         Buffers: shared hit=3
+ Planning:
+   Buffers: shared hit=158
+ Planning Time: 2.113 ms
+ Execution Time: 0.034 ms
+(10 rows)
+
+=== Q1 keyset showtimes WITHOUT index
+                                                                          QUERY PLAN                                                                          
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.216..0.219 rows=51 loops=1)
+   Buffers: shared hit=16
+   ->  Sort (actual time=0.215..0.217 rows=51 loops=1)
+         Sort Key: starts_at, id
+         Sort Method: top-N heapsort  Memory: 28kB
+         Buffers: shared hit=16
+         ->  Seq Scan on showtimes (actual time=0.009..0.160 rows=553 loops=1)
+               Filter: ((starts_at >= now()) AND (starts_at < (now() + '14 days'::interval)) AND (ROW(starts_at, id) > ROW((now() + '3 days'::interval), 0)))
+               Rows Removed by Filter: 191
+               Buffers: shared hit=10
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.453 ms
+ Execution Time: 0.228 ms
+(14 rows)
+
+=== Q2 sweeper expired holds WITH partial index
+                                                 QUERY PLAN                                                 
+------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.004..0.005 rows=0 loops=1)
+   Buffers: shared hit=1
+   ->  LockRows (actual time=0.004..0.004 rows=0 loops=1)
+         Buffers: shared hit=1
+         ->  Index Scan using show_seats_expiry_idx on show_seats (actual time=0.003..0.004 rows=0 loops=1)
+               Index Cond: (held_until <= now())
+               Filter: (status = 'held'::text)
+               Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=75
+ Planning Time: 1.522 ms
+ Execution Time: 0.013 ms
+(12 rows)
+
+=== Q2 sweeper expired holds WITHOUT partial index
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
+ Limit (actual time=6.799..6.800 rows=0 loops=1)
+   Buffers: shared hit=740
+   ->  LockRows (actual time=6.799..6.799 rows=0 loops=1)
+         Buffers: shared hit=740
+         ->  Sort (actual time=6.798..6.798 rows=0 loops=1)
+               Sort Key: held_until
+               Sort Method: quicksort  Memory: 25kB
+               Buffers: shared hit=740
+               ->  Seq Scan on show_seats (actual time=6.795..6.795 rows=0 loops=1)
+                     Filter: ((status = 'held'::text) AND (held_until <= now()))
+                     Rows Removed by Filter: 113859
+                     Buffers: shared hit=740
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.346 ms
+ Execution Time: 6.810 ms
+(16 rows)
+
+=== Q3 seat map of one showtime (PK)
+                                         QUERY PLAN                                         
+--------------------------------------------------------------------------------------------
+ Index Scan using show_seats_pkey on show_seats (actual time=0.013..0.068 rows=280 loops=1)
+   Index Cond: (showtime_id = 12)
+ Planning Time: 0.950 ms
+ Execution Time: 0.080 ms
+(4 rows)
+

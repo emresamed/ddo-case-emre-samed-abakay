@@ -91,7 +91,7 @@ func TestValidate_DetectsContractViolations(t *testing.T) {
 	// drop every show of movie 1 in week 1
 	var kept []Show
 	for _, s := range shows {
-		if !(s.MovieID == 1 && cfg.week(s.Start) == 0) {
+		if s.MovieID != 1 || cfg.week(s.Start) != 0 {
 			kept = append(kept, s)
 		}
 	}

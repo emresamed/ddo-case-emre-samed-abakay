@@ -14,6 +14,7 @@ const USERS = 200; // seeded customers yuk001..yuk200
 const holdOK = new Counter('hold_ok');
 const holdConflict = new Counter('hold_conflict');
 const holdOther = new Counter('hold_other');
+const holdNetwork = new Counter('hold_network_error'); // TCP connect/reset, request never reached the API
 const orderOK = new Counter('order_ok');
 const holdLatency = new Trend('hold_latency', true);
 
@@ -22,7 +23,7 @@ export const options = {
     rush: { executor: 'per-vu-iterations', vus: VUS, iterations: 1, maxDuration: '5m' },
   },
   thresholds: {
-    // the only acceptable failures are "seat taken" conflicts
+    // the API may only answer 201, 409 (taken / busy) or 422 (single-seat rule): no 5xx
     hold_other: ['count==0'],
     'http_req_duration{name:hold}': ['p(95)<3000'],
   },
@@ -73,6 +74,8 @@ export default function (data) {
     if (check(o, { 'order 201': (x) => x.status === 201 })) orderOK.add(1);
   } else if (r.status === 409 || r.status === 422) {
     holdConflict.add(1); // seat taken, busy, too many carts or single-seat rule
+  } else if (r.status === 0) {
+    holdNetwork.add(1);
   } else {
     holdOther.add(1);
     console.error(`unexpected hold response ${r.status} ${r.body}`);

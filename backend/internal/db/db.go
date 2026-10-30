@@ -46,7 +46,7 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 // Migrate applies all pending migrations.
 func Migrate(pool *pgxpool.Pool) error {
 	sqlDB := stdlib.OpenDBFromPool(pool)
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 	return up(sqlDB)
 }
 

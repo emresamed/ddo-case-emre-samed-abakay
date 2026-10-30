@@ -79,7 +79,7 @@ func (c *Client) Do(ctx context.Context, method, path, token string, body any, i
 	if err != nil {
 		return Resp{}, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	b, err := io.ReadAll(res.Body)
 	return Resp{Status: res.StatusCode, Body: b, Header: res.Header}, err
 }
