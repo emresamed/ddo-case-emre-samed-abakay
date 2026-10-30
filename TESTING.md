@@ -122,7 +122,10 @@ Kontrollerin kodu: `backend/cmd/verify/main.go`. Uçların elle denenmesi için:
 | T-3 | `cd backend && go test -run Improve -v ./internal/domain/schedule/` | iyileştirme skoru artırır, kısıtları bozmaz, sonraki seansa ve kapanışa uyar |
 | LIVE | `… go test -run LiveSeatEvents -v ./internal/service/` | tutma ve bırakmada bildirim gelir, başka seansın abonesine gelmez |
 | AB | `cd backend && go test -v ./internal/domain/experiment/` | deterministik ve dengeli atama, deneyler arası bağımsızlık, z-testi |
-| Kaos | `make chaos` | DB dururken `/health` 503 ve hızlı hata; DB geri gelince yeniden başlatmadan 200 |
+| Kaos | `make chaos` | (1) DB dururken `/health` 503 ve hızlı hata, DB dönünce yeniden başlatmadan 200; (2) API `SIGKILL` ile öldürülüp kaldırılınca açık sepet aynı koltuklarla yerinde; (3) DB ağdan koparılınca 503, bağlanınca havuz kendiliğinden toparlanır |
+| T-1 | `make rush` | simülatörün 2000 müşterilik vizyon sabahı; çift satış yok, beklenmeyen kod yok |
+| Frontend | `make test-web` | kaçış (XSS), para biçimi, doluluk metni, takvim, çevrimdışı Ed25519 doğrulaması (sahte, değiştirilmiş, süresi geçmiş, tekrar okutulan bilet) |
+| HTTP | `cd backend && go test -v ./internal/httpapi/` | 401/403 matrisi, `alg=none` token reddi, DB'den önceki girdi doğrulaması, hata eşleme, istek kimliği, panik kurtarma |
 | Kapsama | `make cover` | domain paketleri satır kapsaması (%97,7) |
 
 Entegrasyon testleri gerçek bir PostgreSQL ister; veritabanını silip yeniden seed ederler, bu yüzden **ayrı bir veritabanı** kullanın:

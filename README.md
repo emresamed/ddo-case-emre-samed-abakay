@@ -26,10 +26,16 @@ Migrasyonlar ve seed API açılırken otomatik çalışır; elle yapılacak bir 
 | `make verify` | Ayaktaki sistemde F-1…F-7, T-1…T-5, bonuslar, health, auth ve yetki senaryolarını uçtan uca dener, PASS/FAIL tablosu basar, hata varsa sıfırdan farklı kodla çıkar (kontrollerin kendisi birkaç saniye sürer) |
 | `make load` | k6 ile 2000 sanal müşterinin aynı seansa aynı anda koltuk saldırısı |
 | `make reset-demo` | Veritabanını silip aynı tohumla yeniden seed eder |
-| `make chaos` | PostgreSQL'i durdurur, API'nin bozulduğunu (503) ve DB geri gelince yeniden başlatma gerekmeden toparlandığını gösterir |
-| `make test` | Birim ve entegrasyon testleri (entegrasyon testleri için `TEST_DATABASE_URL` gerekir) |
+| `make rush` | Simülatörün vizyon sabahı modu: 2000 müşteri tek seansa aynı anda; sonunda çift satış kontrolü, ihlalde sıfırdan farklı çıkış |
+| `make chaos` | Üç hata senaryosu: veritabanını durdurma, açık sepet varken API'yi `SIGKILL` ile öldürme, veritabanını ağdan koparma. Her birinde sistemin bozulmayı gösterdiği (503, hızlı hata) ve elle müdahale olmadan toparlandığı kontrol edilir |
+| `make test` | Go birim ve entegrasyon testleri (entegrasyon testleri için `TEST_DATABASE_URL` gerekir) |
+| `make test-web` | Frontend birim testleri (`node --test`, bağımlılık yok) |
 
-**CI kanıtı:** GitHub Actions'taki `e2e` işi her push'ta temiz bir Linux makinede `docker compose up --build` + `make verify` (23/23 PASS) + `make chaos` (PASS) çalıştırır; `test` işi lint, race detector'lı testler ve kapsama kapısını (domain ≥ %70, şu an %97,7) koşturur.
+**CI kanıtı:** GitHub Actions her push'ta dört iş koşturur:
+- `test`: lint, race detector'lı Go testleri (domain + HTTP katmanı + PostgreSQL entegrasyonu) ve kapsama kapısı (domain ≥ %70, şu an %97,8)
+- `web`: frontend birim testleri
+- `images`: imaj derlemesi
+- `e2e`: temiz bir Linux makinede `docker compose up --build`, ardından `make verify` (23/23 PASS), `make load` (k6, 2000 VU), `make rush` (2000 müşteri) ve `make chaos` (3 senaryo PASS)
 
 Demo hesapların (her rol için bir hesap, parola `Demo1234!`) listesi ve elle deneme senaryoları için: [TESTING.md](TESTING.md).
 
@@ -156,17 +162,21 @@ Token yoksa veya geçersizse **401**, token geçerli ama rol yetkisizse **403** 
 
 Her sanal kullanıcı aynı anda merkeze yakın 1–4 koltuk seçer, tutar ve satın alır. Teardown aşamasında bütünlük ucu çağrılır.
 
-| Metrik | Değer |
-|---|---|
-| Tutma isteği p50 / p95 / p99 / max | 47,5 ms / 228 ms / 275 ms / 345 ms |
-| Tüm istekler p50 / p95 / p99 | 45,7 ms / 219 ms / 274 ms |
-| Başarılı tutma → sipariş | 57 → 57 (satılan 112 koltuk = 112 geçerli bilet) |
-| 409/422 (koltuk alınmış, kural, yoğunluk) | 1665 |
-| API 5xx / beklenmeyen kod | **0** |
-| Çift satış (`/integrity`) | **0** (`ok: true`) |
-| TCP seviyesinde başarısız istek | 278 (%13,9), aşağıdaki nota bakın |
+Ana ölçüm **GitHub Actions'ta Linux üzerinde, Docker Compose içinde** alınır ve her push'ta tekrarlanır (`e2e` işi, sonuçlar işin özet sayfasında). 2 vCPU'lu standart `ubuntu-latest` makinesinde API, PostgreSQL ve k6 aynı makinede çalışır; 2000 sanal kullanıcı aynı anda başlar.
 
-> **Ölçüm ortamı ve dürüst not:** Bu sonuçlar Windows 11 dizüstü bilgisayarda, API ve PostgreSQL 16 aynı makinede yerel süreç olarak çalışırken alındı (k6 ölçümü için; Docker kurulumu ve uçtan uca `make verify` ise CI'da Linux üzerinde doğrulandı). 278 istek sunucuya hiç ulaşmadı: Windows'un listen backlog'u, 2000 bağlantının aynı milisaniyede açılmasını kaldırmadı. API logunda bu istekler görünmüyor; API yalnızca 201/409/422 döndürdü. Linux'ta (Docker) backlog çok daha büyük olduğu için bu kayıp beklenmez. k6 betiği ağ hatalarını (`hold_network_error`) API hatalarından (`hold_other`, eşik 0) ayrı sayar.
+| Metrik | Linux / Docker (CI) | Windows yerel (geliştirme makinesi) |
+|---|---|---|
+| Tutma isteği p50 / p95 / p99 / max | 851 ms / 1,11 s / 1,34 s / 1,36 s | 47,5 ms / 228 ms / 275 ms / 345 ms |
+| Başarılı tutma → sipariş | 56 → 56 (111 koltuk = 111 geçerli bilet) | 57 → 57 (112 koltuk = 112 bilet) |
+| 409/422 (koltuk alınmış, kural, yoğunluk) | 1944 | 1665 |
+| API 5xx / beklenmeyen kod | **0** | **0** |
+| Sunucuya ulaşmayan istek (TCP) | **0** | 278 (%13,9) |
+| Çift satış (`/integrity`) | **0** (`ok: true`) | **0** (`ok: true`) |
+
+Notlar:
+- k6 `http_req_failed` metriği 4xx yanıtları da "başarısız" sayar; buradaki %86, kaybedilen koltuk yarışlarının (409) oranıdır, hata değildir. Eşik, API'nin 201/409/422 dışında bir kod döndürmemesidir (`hold_other`, eşik 0).
+- **Linux'taki yüksek gecikmenin sebebi tek bir sıcak sırada toplanan kilit kuyruğu.** 2000 istek aynı milisaniyede gelir ve hepsi aynı seansın orta sıralarına yönelir. Sıra kilidi bu istekleri sıraya sokar (DECISIONS ADR-1); 2 vCPU'da hepsinin cevaplanması yaklaşık 1,3 saniye sürer. Hiçbir istek `lock_timeout` (3 s) sınırına ulaşmadı. Windows ölçümü daha hızlı ama 278 bağlantı hiç kurulamadığı için yük daha azdı; Linux sayıları gerçekçi olanlar.
+- Simülatörün vizyon sabahı modu (`make rush`) aynı CI işinde 2000 müşteriyle koşar. Son koşu: 68 sepet kazandı, 1862 × 409, 70 × 422, cevapsız istek 0; 133 koltuk satıldı = 133 geçerli bilet, 1,35 sn.
 
 ### Dizinler: `EXPLAIN (ANALYZE)`, ham çıktı [docs/explain-analyze.txt](docs/explain-analyze.txt)
 
