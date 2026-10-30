@@ -1,0 +1,11 @@
+# assignment brief (not part of the deliverable)
+proje.md
+.env
+*.out
+coverage.*
+/backend/bin/
+node_modules/
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
