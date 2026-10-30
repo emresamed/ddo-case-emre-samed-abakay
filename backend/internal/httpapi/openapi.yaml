@@ -1,3 +1,443 @@
 openapi: 3.0.3
-info: {title: SahneBilet API, version: "1.0"}
-paths: {}
+info:
+  title: SahneBilet API
+  version: "1.0"
+  description: |
+    Seat sales, showtime scheduling, pricing and gate control for a multi-hall cinema / theatre chain.
+    All amounts are integer kuruş. Errors always use `{"error":{"code","message","details?"}}`.
+    Every /api route except login/refresh/logout requires `Authorization: Bearer <access_token>`;
+    a valid token of a role that is not listed gets 403.
+servers:
+  - url: http://localhost:8080
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: integer } }
+    Uuid: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    IdemKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Same key + same body replays the stored response (header Idempotent-Replayed true); same key + different body is 422.
+      schema: { type: string, maxLength: 100 }
+    Cursor: { name: cursor, in: query, schema: { type: string }, description: opaque keyset cursor from next_cursor }
+    Limit: { name: limit, in: query, schema: { type: integer } }
+    From: { name: from, in: query, required: true, schema: { type: string, format: date } }
+    To: { name: to, in: query, required: true, schema: { type: string, format: date }, description: inclusive }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: SEAT_TAKEN }
+            message: { type: string }
+            details: {}
+    Tokens:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_in: { type: integer }
+        user: { $ref: '#/components/schemas/Actor' }
+    Actor:
+      type: object
+      properties:
+        user_id: { type: integer }
+        role: { type: string, enum: [customer, box_office, hall_manager, programmer, accounting, gate] }
+        email: { type: string }
+    Seat:
+      type: object
+      properties:
+        id: { type: integer }
+        row: { type: integer }
+        col: { type: integer }
+        label: { type: string, example: F-8 }
+        kind: { type: string, enum: [standard, vip, accessible, blocked] }
+        status: { type: string, enum: [free, held, sold] }
+        mine: { type: boolean }
+    Movie:
+      type: object
+      required: [title, duration_min, distributor, release_date]
+      properties:
+        id: { type: integer, readOnly: true }
+        title: { type: string }
+        kind: { type: string, enum: [film, play] }
+        duration_min: { type: integer, minimum: 30, maximum: 300 }
+        distributor: { type: string }
+        release_date: { type: string, format: date }
+        min_weekly_shows: { type: integer }
+        min_prime_bp: { type: integer, description: minimum prime-time share in basis points }
+        share_week1_bp: { type: integer }
+        share_week2_bp: { type: integer }
+        share_later_bp: { type: integer }
+    Showtime:
+      type: object
+      properties:
+        id: { type: integer }
+        movie_id: { type: integer }
+        movie_title: { type: string }
+        hall_id: { type: integer }
+        hall_name: { type: string }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        base_price_kurus: { type: integer }
+        capacity: { type: integer }
+        taken: { type: integer }
+    Hold:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        showtime_id: { type: integer }
+        status: { type: string, enum: [active, expired, released, converted] }
+        expires_at: { type: string, format: date-time }
+        extensions: { type: integer, maximum: 2 }
+        seat_ids: { type: array, items: { type: integer } }
+    OrderRequest:
+      type: object
+      required: [hold_id]
+      properties:
+        hold_id: { type: string, format: uuid }
+        tickets:
+          type: array
+          items:
+            type: object
+            properties:
+              seat_id: { type: integer }
+              category: { type: string, enum: [full, student] }
+        combos: { type: integer, minimum: 0, maximum: 10 }
+        coupon_code: { type: string }
+        gift_card_code: { type: string }
+    Tax:
+      type: object
+      properties:
+        net: { type: integer }
+        ent_tax: { type: integer }
+        vat: { type: integer }
+    Quote:
+      type: object
+      properties:
+        subtotal: { type: integer }
+        discount: { type: integer }
+        total: { type: integer }
+        gift_applied: { type: integer }
+        payable: { type: integer }
+        tax: { $ref: '#/components/schemas/Tax' }
+        lines: { type: array, items: { type: object } }
+    Order:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        showtime_id: { type: integer }
+        channel: { type: string, enum: [online, box_office] }
+        status: { type: string, enum: [paid, partially_refunded, refunded] }
+        subtotal: { type: integer }
+        discount: { type: integer }
+        total: { type: integer }
+        gift_paid: { type: integer }
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [ticket, combo] }
+              ticket_id: { type: string }
+              seat_label: { type: string }
+              paid: { type: integer }
+              gift_paid: { type: integer }
+              tax: { $ref: '#/components/schemas/Tax' }
+              status: { type: string, enum: [valid, used, refunded] }
+    GateEvent:
+      type: object
+      properties:
+        ticket_id: { type: string }
+        gate_id: { type: string }
+        scanned_at: { type: string, format: date-time }
+    GateState:
+      type: object
+      properties:
+        public_key: { type: string, description: base64 raw Ed25519 public key }
+        used: { type: array, items: { type: string } }
+        revoked: { type: array, items: { type: string } }
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string, enum: [DUPLICATE_ENTRY, ADMITTED_AFTER_REFUND, UNKNOWN_TICKET] }
+              ticket_id: { type: string }
+              gate_id: { type: string }
+              scanned_at: { type: string, format: date-time }
+              first_gate: { type: string }
+              first_at: { type: string, format: date-time }
+security:
+  - bearer: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Liveness + database check
+      responses:
+        "200": { description: ok }
+        "503": { description: database unreachable }
+  /metrics:
+    get:
+      security: []
+      summary: Prometheus metrics
+      responses: { "200": { description: text exposition format } }
+  /api/auth/login:
+    post:
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { email: { type: string }, password: { type: string } } }
+      responses:
+        "200": { description: tokens, content: { application/json: { schema: { $ref: '#/components/schemas/Tokens' } } } }
+        "401": { $ref: '#/components/responses/Error' }
+  /api/auth/refresh:
+    post:
+      security: []
+      summary: Rotate refresh token (old one is revoked)
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { refresh_token: { type: string } } } } }
+      responses:
+        "200": { description: new tokens }
+        "401": { $ref: '#/components/responses/Error' }
+  /api/auth/logout:
+    post:
+      security: []
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { refresh_token: { type: string } } } } }
+      responses: { "204": { description: revoked } }
+  /api/me:
+    get:
+      summary: Current user (any role)
+      responses: { "200": { description: actor, content: { application/json: { schema: { $ref: '#/components/schemas/Actor' } } } } }
+  /api/halls:
+    get:
+      summary: Halls with capacity (any role)
+      responses: { "200": { description: list } }
+  /api/halls/{id}/seats:
+    get:
+      summary: Static seat map (any role)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { "200": { description: seats } }
+  /api/seats/{id}:
+    patch:
+      summary: Change seat kind (hall_manager). Blocking a seat with an upcoming hold/ticket is 409.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { kind: { type: string, enum: [standard, vip, accessible, blocked] } } } } }
+      responses:
+        "200": { description: seat }
+        "409": { $ref: '#/components/responses/Error' }
+  /api/movies:
+    get:
+      summary: Films and plays with contract terms (any role)
+      responses: { "200": { description: list } }
+    post:
+      summary: Add a film or play (programmer)
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/Movie' } } } }
+      responses:
+        "201": { description: created }
+        "422": { $ref: '#/components/responses/Error' }
+  /api/showtimes:
+    get:
+      summary: Showtimes, keyset paginated by (starts_at, id) (any role)
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: movie_id, in: query, schema: { type: integer } }
+        - { name: hall_id, in: query, schema: { type: integer } }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        "200":
+          description: page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Showtime' } }
+                  next_cursor: { type: string }
+  /api/showtimes/{id}:
+    get:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { "200": { description: showtime } }
+  /api/showtimes/{id}/seats:
+    get:
+      summary: Live seat states and current prices (any role)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { "200": { description: seat map with prices {full, student, combo} } }
+  /api/showtimes/{id}/suggest:
+    get:
+      summary: Best adjacent seats for a group, never leaving a single empty seat (customer, box_office, hall_manager)
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { name: n, in: query, schema: { type: integer, minimum: 1, maximum: 10 } }
+        - { name: accessible, in: query, schema: { type: boolean }, description: true = block must contain an accessible seat; false = accessible seats are never offered }
+      responses: { "200": { description: suggestions } }
+  /api/showtimes/{id}/integrity:
+    get:
+      summary: No-double-sale invariant check (hall_manager, accounting)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { "200": { description: "{ok, sold_seats, valid_tickets, duplicate_seats, sold_without_ticket}" } }
+  /api/holds:
+    post:
+      summary: Atomically hold 1-10 seats for 10 minutes (customer, box_office, hall_manager)
+      parameters: [{ $ref: '#/components/parameters/IdemKey' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                showtime_id: { type: integer }
+                seat_ids: { type: array, items: { type: integer } }
+                override_single_seat: { type: boolean, description: hall_manager only }
+      responses:
+        "201": { description: hold, content: { application/json: { schema: { $ref: '#/components/schemas/Hold' } } } }
+        "409": { description: "SEAT_TAKEN | BUSY | SHOW_STARTED | TOO_MANY_HOLDS", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        "422": { description: "SINGLE_SEAT_RULE (details = orphan seats) | VALIDATION_ERROR", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/holds/{id}:
+    get:
+      parameters: [{ $ref: '#/components/parameters/Uuid' }]
+      responses: { "200": { description: hold }, "404": { $ref: '#/components/responses/Error' } }
+    delete:
+      summary: Release the cart now
+      parameters: [{ $ref: '#/components/parameters/Uuid' }]
+      responses: { "204": { description: released } }
+  /api/holds/{id}/extend:
+    post:
+      summary: Extend to now + 10 min, at most twice
+      parameters: [{ $ref: '#/components/parameters/Uuid' }]
+      responses: { "200": { description: hold }, "409": { description: "HOLD_EXPIRED | EXTENSION_LIMIT" } }
+  /api/quote:
+    post:
+      summary: Price a cart without side effects
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/OrderRequest' } } } }
+      responses: { "200": { description: quote, content: { application/json: { schema: { $ref: '#/components/schemas/Quote' } } } } }
+  /api/orders:
+    get:
+      summary: Own orders (customer) or all orders (box_office, hall_manager, accounting), newest first
+      parameters: [{ $ref: '#/components/parameters/Cursor' }, { $ref: '#/components/parameters/Limit' }]
+      responses: { "200": { description: page of orders } }
+    post:
+      summary: Pay a hold (online for customers, box_office channel for box office staff)
+      parameters: [{ $ref: '#/components/parameters/IdemKey' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/OrderRequest' } } } }
+      responses:
+        "201": { description: order, content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } } }
+        "409": { description: "HOLD_EXPIRED | COUPON_EXHAUSTED | SEAT_TAKEN" }
+        "422": { description: "COUPON_INVALID | COUPON_MIN_TOTAL | GIFT_CARD_INVALID" }
+  /api/orders/{id}:
+    get:
+      parameters: [{ $ref: '#/components/parameters/Uuid' }]
+      responses: { "200": { description: order } }
+  /api/orders/{id}/refund:
+    post:
+      summary: Refund tickets (empty list = everything left). Combos follow the last ticket.
+      parameters: [{ $ref: '#/components/parameters/Uuid' }, { $ref: '#/components/parameters/IdemKey' }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { ticket_ids: { type: array, items: { type: string } } } } } }
+      responses:
+        "200": { description: "{status, refund: {amount, to_gift_card, to_original_payment, tax, restore_coupon}}" }
+        "409": { description: "REFUND_WINDOW_CLOSED | TICKET_USED | NOTHING_TO_REFUND" }
+  /api/tickets/{id}/qr:
+    get:
+      summary: Signed QR payload SB1.<payload>.<ed25519 signature> (owner or box_office)
+      parameters: [{ $ref: '#/components/parameters/Uuid' }]
+      responses: { "200": { description: "{ticket_id, qr}" } }
+  /api/gate/state:
+    get:
+      summary: Public key + used/refunded ticket lists to preload a scanner (gate, hall_manager)
+      responses: { "200": { description: state, content: { application/json: { schema: { $ref: '#/components/schemas/GateState' } } } } }
+  /api/gate/scan:
+    post:
+      summary: Online scan; conditional update admits a ticket once (gate)
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { gate_id: { type: string }, code: { type: string } } } } }
+      responses: { "200": { description: "{result: ACCEPTED | REJECTED_*, seat, first_gate, first_at}" } }
+  /api/gate/sync:
+    post:
+      summary: Upload offline scans; earliest scan wins; conflicts returned and stored; replays are no-ops (gate)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                gate_id: { type: string }
+                scans: { type: array, items: { $ref: '#/components/schemas/GateEvent' } }
+      responses: { "200": { description: state, content: { application/json: { schema: { $ref: '#/components/schemas/GateState' } } } } }
+  /api/gate/conflicts:
+    get:
+      summary: Recent offline conflicts (gate, hall_manager)
+      responses: { "200": { description: list } }
+  /api/reports/revenue:
+    get:
+      summary: Revenue by movie and channel with tax split and refunds (accounting)
+      parameters: [{ $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }]
+      responses: { "200": { description: report } }
+  /api/reports/distributor:
+    get:
+      summary: Distributor share per film and release week on net ticket revenue (accounting)
+      parameters: [{ $ref: '#/components/parameters/From' }, { $ref: '#/components/parameters/To' }]
+      responses: { "200": { description: rows } }
+  /api/schedule/generate:
+    post:
+      summary: Generate a conflict-free plan; save=true writes it into an empty period (programmer)
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { from: { type: string, format: date }, days: { type: integer }, save: { type: boolean } } }
+      responses:
+        "200": { description: "{shows, problems[], saved, plan[]}" }
+        "409": { description: PERIOD_NOT_EMPTY }
+  /api/schedule/validate:
+    get:
+      summary: Validate stored showtimes against hall and contract constraints (programmer, hall_manager)
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: days, in: query, schema: { type: integer } }
+      responses: { "200": { description: "{shows, problems[]}" } }
+  /api/coupons:
+    get:
+      summary: Coupons (accounting, programmer)
+      responses: { "200": { description: list } }
+    post:
+      summary: Create coupon (accounting)
+      responses: { "201": { description: created }, "409": { description: COUPON_EXISTS } }
+  /api/gift-cards:
+    post:
+      summary: Sell a gift card at the box office (box_office)
+      parameters: [{ $ref: '#/components/parameters/IdemKey' }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { amount_kurus: { type: integer } } } } }
+      responses: { "201": { description: gift card } }
+  /api/gift-cards/{code}:
+    get:
+      summary: Balance (customer, box_office)
+      parameters: [{ name: code, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: gift card } }
+  /api/audit:
+    get:
+      summary: Append-only audit log, newest first, keyset on id (accounting, hall_manager)
+      parameters:
+        - { name: before, in: query, schema: { type: integer } }
+        - { $ref: '#/components/parameters/Limit' }
+      responses: { "200": { description: "{items, next_before}" } }
+  /api/stats/live:
+    get:
+      summary: Activity in the last minute, shows that the simulator / system is live (any role)
+      responses: { "200": { description: counters } }

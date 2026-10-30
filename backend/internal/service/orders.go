@@ -454,6 +454,7 @@ func (s *Service) Refund(ctx context.Context, a Actor, orderID string, ticketIDs
 		if err != nil {
 			return err
 		}
+		all := len(ticketIDs) == 0
 		want := map[string]bool{}
 		for _, id := range ticketIDs {
 			want[id] = true
@@ -464,7 +465,7 @@ func (s *Service) Refund(ctx context.Context, a Actor, orderID string, ticketIDs
 			if l.Kind != pricing.KindTicket || l.Status == "refunded" {
 				continue
 			}
-			if len(want) == 0 || want[l.TicketID] {
+			if all || want[l.TicketID] {
 				if l.Status == "used" {
 					return E(http.StatusConflict, "TICKET_USED", "ticket "+l.TicketID+" was already used at the gate")
 				}

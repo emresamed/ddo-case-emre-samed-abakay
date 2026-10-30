@@ -1,0 +1,91 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U test" --health-interval 3s --health-timeout 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      TEST_DATABASE_URL: postgres://test:test@localhost:5432/test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Build
+        run: go build ./...
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: backend
+      - name: Test (race detector, integration tests against PostgreSQL)
+        run: go test -race -count=1 -coverpkg=./internal/... -coverprofile=coverage.out ./...
+      - name: Coverage report
+        run: |
+          echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "Domain packages:" | tee -a "$GITHUB_STEP_SUMMARY"
+          go test -count=1 -cover ./internal/domain/... | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Domain coverage gate (>= 70%)
+        run: |
+          go test -count=1 -coverprofile=domain.out ./internal/domain/...
+          total=$(go tool cover -func=domain.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "domain coverage: $total%"
+          awk -v t="$total" 'BEGIN { exit (t >= 70) ? 0 : 1 }'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: backend/coverage.out
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: false
+          tags: sahnebilet-api:ci
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: false
+          tags: sahnebilet-web:ci
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start stack
+        run: cp .env.example .env && docker compose up --build -d --wait db api web
+      - name: make verify
+        run: make verify
+      - name: Chaos scenario
+        run: sh scripts/chaos.sh
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail=200
