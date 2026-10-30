@@ -204,6 +204,27 @@ function viewLogin() {
   });
 }
 
+// occupancy renders "how full is it" so it reads at a glance: a status line
+// in words, a bar that fills as seats sell, and the exact numbers below.
+function occupancy(free, capacity, pct) {
+  let status;
+  let level = '';
+  if (free <= 0) {
+    status = 'Tükendi';
+    level = 'full';
+  } else if (free <= Math.max(10, capacity * 0.15)) {
+    status = `Son ${free} koltuk`;
+    level = 'low';
+  } else {
+    status = `${free} koltuk boş`;
+  }
+  return `<span class="occ ${level}">
+    <span class="occ-status">${status}</span>
+    <span class="occ-bar" title="%${pct} dolu"><i style="width:${Math.max(pct, 0)}%"></i></span>
+    <span class="occ-meta">${pct > 0 ? `%${pct} dolu` : 'henüz satış yok'} · ${capacity} koltuk</span>
+  </span>`;
+}
+
 async function viewShows() {
   const now = new Date();
   const to = new Date(now.getTime() + 3 * 864e5);
@@ -227,7 +248,7 @@ async function viewShows() {
             return `<a class="show-row" href="#/show/${s.id}">
               <span class="show-time">${fmtTime(s.starts_at)}</span>
               <span><strong>${esc(s.movie_title)}</strong><br><span class="muted small">${esc(s.hall_name)} · bitiş ${fmtTime(s.ends_at)}</span></span>
-              <span class="small muted">${started ? '<span class="tag">başladı</span>' : `${s.capacity - s.taken} boş / ${s.capacity}<div class="bar"><i style="width:${pct}%"></i></div>`}</span>
+              ${started ? '<span class="occ"><span class="tag">Seans başladı</span></span>' : occupancy(s.capacity - s.taken, s.capacity, pct)}
             </a>`;
           }).join('')}
         </section>`).join('');

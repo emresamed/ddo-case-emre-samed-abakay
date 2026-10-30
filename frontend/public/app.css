@@ -156,3 +156,17 @@ tr.click:hover td { background: #F8FAFC; }
   body { background: #fff; }
   .pass { border-color: #94A3B8; }
 }
+
+/* showtime occupancy: words first, bar second, numbers last */
+.occ { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 150px; text-align: right; }
+.occ-status { font-size: 14px; font-weight: 500; color: var(--text); }
+.occ-bar { display: block; width: 150px; height: 6px; border-radius: 3px; background: #E2E8F0; overflow: hidden; }
+.occ-bar > i { display: block; height: 100%; background: #475569; border-radius: 3px; }
+.occ-meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.occ.low .occ-status { color: var(--warn); }
+.occ.low .occ-bar > i { background: #D97706; }
+.occ.full .occ-status { color: var(--bad); }
+.occ.full .occ-bar > i { background: var(--bad); }
+@media (max-width: 640px) {
+  .occ { align-items: flex-start; text-align: left; }
+}
