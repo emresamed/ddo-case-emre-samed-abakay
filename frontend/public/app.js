@@ -754,7 +754,8 @@ async function viewSchedule() {
       plan = `<h3 style="margin-top:16px">İlk gün (${first.length} seans)</h3><div class="table-wrap"><table><thead><tr><th>Salon</th><th>Başlangıç</th><th>Bitiş</th><th>Film</th></tr></thead><tbody>
         ${first.map((s) => `<tr><td>${esc(hname(s.hall_id))}</td><td>${fmtTime(s.start)}</td><td>${fmtTime(s.end)}</td><td>${esc(mname(s.movie_id))}</td></tr>`).join('')}</tbody></table></div>`;
     }
-    out.innerHTML = `<div class="label">${r.shows} seans · ${r.days} gün${r.saved ? ' · kaydedildi' : ''}</div>${problems}${plan}`;
+    const imp = r.improvement ? `<p class="small muted">İyileştirme turu: ${r.improvement.swaps} film yer değiştirdi; kapasite × talep skoru ${r.improvement.objective_before.toLocaleString('tr-TR')} → ${r.improvement.objective_after.toLocaleString('tr-TR')} (+%${((r.improvement.objective_after / r.improvement.objective_before - 1) * 100).toFixed(1)}). Popüler filmler büyük salonlara, haftalık ve prime-time sayıları değişmeden taşındı.</p>` : '';
+    out.innerHTML = `<div class="label">${r.shows} seans · ${r.days} gün${r.saved ? ' · kaydedildi' : ''}</div>${problems}${imp}${plan}`;
   };
   const params = () => ({ from: $app.querySelector('#from').value, days: Number($app.querySelector('#days').value) });
   $app.querySelector('#validate').addEventListener('click', async () => {

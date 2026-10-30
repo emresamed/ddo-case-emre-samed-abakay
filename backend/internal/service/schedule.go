@@ -20,27 +20,29 @@ type ScheduleResult struct {
 	Problems []schedule.Problem `json:"problems"`
 	Saved    bool               `json:"saved"`
 	Plan     []schedule.Show    `json:"plan,omitempty"`
+	Improve  *schedule.Stats    `json:"improvement,omitempty"`
 }
 
 func (s *Service) scheduleInputs(ctx context.Context, q querier) ([]schedule.Hall, []schedule.Movie, error) {
-	rows, err := q.Query(ctx, `SELECT id, name FROM halls ORDER BY id`)
+	rows, err := q.Query(ctx, `SELECT h.id, h.name, (SELECT count(*) FROM seats s WHERE s.hall_id = h.id AND s.kind <> 'blocked') FROM halls h ORDER BY h.id`)
 	if err != nil {
 		return nil, nil, err
 	}
 	halls, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (schedule.Hall, error) {
 		var h schedule.Hall
-		return h, r.Scan(&h.ID, &h.Name)
+		return h, r.Scan(&h.ID, &h.Name, &h.Seats)
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	rows, err = q.Query(ctx, `SELECT id, title, duration_min, min_weekly_shows, min_prime_bp FROM movies ORDER BY id`)
+	// demand proxy: the weekly minimum the distributor negotiated
+	rows, err = q.Query(ctx, `SELECT id, title, duration_min, min_weekly_shows, min_prime_bp, GREATEST(min_weekly_shows, 1) FROM movies ORDER BY id`)
 	if err != nil {
 		return nil, nil, err
 	}
 	movies, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (schedule.Movie, error) {
 		var m schedule.Movie
-		return m, r.Scan(&m.ID, &m.Title, &m.DurationMin, &m.MinWeeklyShows, &m.MinPrimeBP)
+		return m, r.Scan(&m.ID, &m.Title, &m.DurationMin, &m.MinWeeklyShows, &m.MinPrimeBP, &m.Demand)
 	})
 	return halls, movies, err
 }
@@ -73,7 +75,8 @@ func (s *Service) GenerateSchedule(ctx context.Context, a Actor, from string, da
 	if err != nil {
 		return ScheduleResult{}, invalid(err.Error())
 	}
-	res := ScheduleResult{From: from, Days: days, Shows: len(plan), Problems: schedule.Validate(cfg, halls, movies, plan)}
+	plan, stats := schedule.Improve(cfg, halls, movies, plan)
+	res := ScheduleResult{From: from, Days: days, Shows: len(plan), Problems: schedule.Validate(cfg, halls, movies, plan), Improve: &stats}
 	if res.Problems == nil {
 		res.Problems = []schedule.Problem{}
 	}

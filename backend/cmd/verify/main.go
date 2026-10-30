@@ -1065,7 +1065,11 @@ func (v *V) t3(ctx context.Context) error {
 		return err
 	}
 	var res struct {
-		Shows    int `json:"shows"`
+		Shows       int `json:"shows"`
+		Improvement *struct {
+			Before int64 `json:"objective_before"`
+			After  int64 `json:"objective_after"`
+		} `json:"improvement"`
 		Problems []struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
@@ -1084,6 +1088,9 @@ func (v *V) t3(ctx context.Context) error {
 	_ = r.Decode(&res)
 	if len(res.Problems) > 0 || res.Shows < 10*14*4 {
 		return fmt.Errorf("generated: %d shows, problems %+v", res.Shows, res.Problems)
+	}
+	if res.Improvement == nil || res.Improvement.After < res.Improvement.Before {
+		return fmt.Errorf("improvement round missing or made the plan worse: %+v", res.Improvement)
 	}
 	r, err = v.do(ctx, http.MethodPost, "/api/schedule/generate", v.tok["prog"], map[string]any{"from": today, "days": 7, "save": true})
 	if err := expect(r, err, 409, "save over existing period"); err != nil {

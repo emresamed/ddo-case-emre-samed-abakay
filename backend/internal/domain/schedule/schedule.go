@@ -10,8 +10,9 @@ import (
 
 // Hall is a screen room.
 type Hall struct {
-	ID   int64
-	Name string
+	ID    int64
+	Name  string
+	Seats int // sellable seats; used by Improve
 }
 
 // Movie carries the contract constraints for one film or play.
@@ -21,6 +22,7 @@ type Movie struct {
 	DurationMin    int
 	MinWeeklyShows int   // contract: at least this many shows per week (all halls)
 	MinPrimeBP     int64 // contract: at least this share of its shows in prime time
+	Demand         int   // expected popularity (relative); used by Improve
 }
 
 // Config describes the operating rules of the cinema.

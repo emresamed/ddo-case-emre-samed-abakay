@@ -92,7 +92,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, svc *service.Service, seedValu
 		if err := tx.QueryRow(ctx, `INSERT INTO halls (name, rows, cols) VALUES ($1,$2,$3) RETURNING id`, name, rows, cols).Scan(&id); err != nil {
 			return err
 		}
-		halls = append(halls, schedule.Hall{ID: id, Name: name})
+		hall := schedule.Hall{ID: id, Name: name}
 		aisle := 0
 		if cols >= 16 {
 			aisle = cols/2 + 1 // a centre aisle: one blocked column
@@ -112,8 +112,12 @@ func Run(ctx context.Context, pool *pgxpool.Pool, svc *service.Service, seedValu
 				if _, err := tx.Exec(ctx, `INSERT INTO seats (hall_id, row_no, col_no, label, kind) VALUES ($1,$2,$3,$4,$5)`, id, r, c, label, kind); err != nil {
 					return err
 				}
+				if kind != "blocked" {
+					hall.Seats++
+				}
 			}
 		}
+		halls = append(halls, hall)
 	}
 
 	var sm []schedule.Movie
@@ -125,7 +129,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, svc *service.Service, seedValu
 			m.title, m.kind, m.duration, m.distributor, rel.Format("2006-01-02"), m.minWeekly, m.minPrime, m.w1, m.w2, m.later).Scan(&id); err != nil {
 			return err
 		}
-		sm = append(sm, schedule.Movie{ID: id, Title: m.title, DurationMin: m.duration, MinWeeklyShows: m.minWeekly, MinPrimeBP: m.minPrime})
+		sm = append(sm, schedule.Movie{ID: id, Title: m.title, DurationMin: m.duration, MinWeeklyShows: m.minWeekly, MinPrimeBP: m.minPrime, Demand: max(m.minWeekly, 1)})
 	}
 
 	cfg := schedule.DefaultConfig(today, days)
@@ -133,6 +137,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, svc *service.Service, seedValu
 	if err != nil {
 		return err
 	}
+	plan, _ = schedule.Improve(cfg, halls, sm, plan)
 	if p := schedule.Validate(cfg, halls, sm, plan); len(p) > 0 {
 		return fmt.Errorf("seed schedule invalid: %v", p[0])
 	}

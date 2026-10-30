@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -11,17 +12,17 @@ func fixture() (Config, []Hall, []Movie) {
 	cfg := DefaultConfig(time.Date(2026, 11, 2, 0, 0, 0, 0, trt), 14)
 	var halls []Hall
 	for i := 1; i <= 10; i++ {
-		halls = append(halls, Hall{ID: int64(i), Name: "Salon"})
+		halls = append(halls, Hall{ID: int64(i), Name: "Salon", Seats: 80 + 20*i})
 	}
 	movies := []Movie{
-		{1, "Kuzey Yıldızı", 128, 30, 2500},
-		{2, "Son Vapur", 104, 25, 2000},
-		{3, "Bozkırda Bir Gece", 142, 20, 2500},
-		{4, "Ada Çocukları (Animasyon)", 95, 30, 1000},
-		{5, "Kayıp Defter", 117, 20, 2000},
-		{6, "Hamlet (Sahne Kaydı)", 165, 8, 3000},
-		{7, "Kırmızı Çizgi", 110, 25, 2500},
-		{8, "Sessiz Liman", 99, 15, 1500},
+		{1, "Kuzey Yıldızı", 128, 30, 2500, 30},
+		{2, "Son Vapur", 104, 25, 2000, 25},
+		{3, "Bozkırda Bir Gece", 142, 20, 2500, 20},
+		{4, "Ada Çocukları (Animasyon)", 95, 30, 1000, 30},
+		{5, "Kayıp Defter", 117, 20, 2000, 20},
+		{6, "Hamlet (Sahne Kaydı)", 165, 8, 3000, 8},
+		{7, "Kırmızı Çizgi", 110, 25, 2500, 25},
+		{8, "Sessiz Liman", 99, 15, 1500, 15},
 	}
 	return cfg, halls, movies
 }
@@ -110,16 +111,69 @@ func TestValidate_DetectsBadShows(t *testing.T) {
 	cfg, halls, movies := fixture()
 	early := cfg.Start.Add(8 * time.Hour)
 	bad := []Show{
-		{HallID: 1, MovieID: 1, Start: early, End: early.Add(143 * time.Minute)},             // before opening
-		{HallID: 1, MovieID: 99, Start: early, End: early},                                     // unknown movie
-		{HallID: 99, MovieID: 1, Start: early, End: early},                                     // unknown hall
+		{HallID: 1, MovieID: 1, Start: early, End: early.Add(143 * time.Minute)},                          // before opening
+		{HallID: 1, MovieID: 99, Start: early, End: early},                                                // unknown movie
+		{HallID: 99, MovieID: 1, Start: early, End: early},                                                // unknown hall
 		{HallID: 2, MovieID: 1, Start: cfg.Start.Add(12 * time.Hour), End: cfg.Start.Add(13 * time.Hour)}, // wrong length
-		{HallID: 3, MovieID: 1, Start: cfg.Start.AddDate(0, 0, -1), End: cfg.Start},           // out of range
+		{HallID: 3, MovieID: 1, Start: cfg.Start.AddDate(0, 0, -1), End: cfg.Start},                       // out of range
 	}
 	p := Validate(cfg, halls, movies, bad)
 	for _, code := range []string{"OUTSIDE_HOURS", "UNKNOWN_MOVIE", "UNKNOWN_HALL", "BAD_LENGTH", "OUT_OF_RANGE"} {
 		if !has(p, code) {
 			t.Errorf("missing %s in %+v", code, p)
 		}
+	}
+}
+
+func TestImprove_RaisesObjectiveAndKeepsConstraints(t *testing.T) {
+	cfg, halls, movies := fixture()
+	plan, _ := Generate(cfg, halls, movies)
+	better, st := Improve(cfg, halls, movies, plan)
+	if st.Swaps == 0 || st.ObjectiveAfter <= st.ObjectiveBefore {
+		t.Fatalf("no improvement: %+v", st)
+	}
+	if st.ObjectiveAfter != Objective(cfg, halls, movies, better) {
+		t.Fatal("reported objective does not match the plan")
+	}
+	if p := Validate(cfg, halls, movies, better); len(p) > 0 {
+		t.Fatalf("improved plan violates constraints: %+v", p[:min(3, len(p))])
+	}
+	if len(better) != len(plan) {
+		t.Fatal("improve must not add or drop shows")
+	}
+	// every film keeps exactly its number of shows and prime shows per day
+	count := func(pl []Show) map[string]int {
+		m := map[string]int{}
+		for _, s := range pl {
+			m[fmt.Sprintf("%d|%s|%v", s.MovieID, s.Start.Format("2006-01-02"), cfg.prime(s.Start))]++
+		}
+		return m
+	}
+	a, b := count(plan), count(better)
+	for k, v := range a {
+		if b[k] != v {
+			t.Fatalf("show count changed for %s: %d -> %d", k, v, b[k])
+		}
+	}
+}
+
+func TestImprove_PopularFilmMovesToBigHall(t *testing.T) {
+	cfg := DefaultConfig(time.Date(2026, 11, 2, 0, 0, 0, 0, trt), 1)
+	halls := []Hall{{ID: 1, Seats: 300}, {ID: 2, Seats: 60}}
+	movies := []Movie{{ID: 1, DurationMin: 100, Demand: 1}, {ID: 2, DurationMin: 100, Demand: 10}}
+	start := cfg.Start.Add(19 * time.Hour)
+	end := start.Add(115 * time.Minute)
+	plan := []Show{{HallID: 1, MovieID: 1, Start: start, End: end}, {HallID: 2, MovieID: 2, Start: start, End: end}}
+	out, st := Improve(cfg, halls, movies, plan)
+	if st.Swaps != 1 || out[0].MovieID != 2 || out[1].MovieID != 1 {
+		t.Fatalf("popular film should move to the big hall: %+v %+v", out, st)
+	}
+	// a longer film that would overlap the next show in the big hall stays put
+	movies[1].DurationMin = 200
+	plan[1].End = start.Add(215 * time.Minute)
+	plan = append(plan, Show{HallID: 1, MovieID: 1, Start: end.Add(25 * time.Minute), End: end.Add(140 * time.Minute)})
+	_, st = Improve(cfg, halls, movies, plan)
+	if st.Swaps != 0 {
+		t.Fatalf("swap must respect the next show + cleaning: %+v", st)
 	}
 }
