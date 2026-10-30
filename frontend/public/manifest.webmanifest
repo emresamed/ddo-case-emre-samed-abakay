@@ -1,0 +1,9 @@
+{
+  "name": "SahneBilet",
+  "short_name": "SahneBilet",
+  "start_url": "/#/wallet",
+  "display": "standalone",
+  "background_color": "#FBFBFA",
+  "theme_color": "#0F172A",
+  "lang": "tr"
+}

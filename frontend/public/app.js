@@ -9,7 +9,7 @@ const ROLE_NAMES = {
   programmer: 'Programcı', accounting: 'Muhasebe', gate: 'Giriş kontrol',
 };
 const MENUS = {
-  customer: [['#/shows', 'Seanslar'], ['#/orders', 'Biletlerim']],
+  customer: [['#/shows', 'Seanslar'], ['#/orders', 'Biletlerim'], ['#/wallet', 'Cüzdanım']],
   box_office: [['#/shows', 'Gişe satışı'], ['#/orders', 'Siparişler'], ['#/giftcards', 'Hediye çeki']],
   hall_manager: [['#/shows', 'Seanslar'], ['#/halls', 'Salon düzeni'], ['#/conflicts', 'Giriş çakışmaları'], ['#/orders', 'Siparişler'], ['#/audit', 'Denetim kaydı']],
   programmer: [['#/schedule', 'Seans programı'], ['#/movies', 'Filmler / oyunlar'], ['#/coupons', 'Kuponlar']],
@@ -530,10 +530,10 @@ async function viewShow(id) {
   }, 1000);
 }
 
-function drawQR(el, text) {
+function drawQR(el, text, size = 168) {
   if (window.QRCode) {
     el.innerHTML = '';
-    new window.QRCode(el, { text, width: 168, height: 168, correctLevel: window.QRCode.CorrectLevel.M });
+    new window.QRCode(el, { text, width: size, height: size, correctLevel: window.QRCode.CorrectLevel.M });
   } else {
     el.innerHTML = `<div class="mono">${esc(text)}</div>`;
   }
@@ -555,6 +555,7 @@ async function viewOrder(oid) {
           <div class="spread" style="border-top:1px solid var(--border);padding-top:12px">
             <div><strong>${esc(t.seat_label)}</strong> · ${t.category === 'student' ? 'Öğrenci' : 'Tam'} · ${tl(t.paid)}
               <div><span class="tag ${t.status === 'valid' ? 'ok' : t.status === 'used' ? '' : 'bad'}">${esc(st(t.status))}</span></div>
+              ${t.status === 'valid' && role === 'customer' ? `<a class="btn btn-sm" href="#/pass/${t.ticket_id}" style="margin-top:8px">Cüzdan bileti</a>` : ''}
               ${canRefund && t.status === 'valid' ? `<button class="btn btn-ghost btn-sm" data-refund="${t.ticket_id}" style="margin-top:8px">Bu bileti iade et</button>` : ''}
             </div>
             <div class="qr" data-qr="${t.ticket_id}" ${t.status !== 'valid' ? 'hidden' : ''}></div>
@@ -577,7 +578,7 @@ async function viewOrder(oid) {
   if (role === 'customer' || role === 'box_office') {
     for (const el of $app.querySelectorAll('[data-qr]')) {
       if (el.hidden) continue;
-      api('GET', `/api/tickets/${el.dataset.qr}/qr`).then((r) => drawQR(el, r.qr)).catch((e) => { el.innerHTML = failure(e); });
+      api('GET', `/api/tickets/${el.dataset.qr}/qr`).then((r) => { drawQR(el, r.qr); if (role === 'customer') walletStore.put(r); }).catch((e) => { el.innerHTML = failure(e); });
     }
   }
   const doRefund = async (ids) => {
@@ -982,6 +983,85 @@ async function viewGate() {
   }
 }
 
+
+// --- wallet: full-screen mobile ticket, stored on the device so it opens
+// without network at the door
+
+const walletStore = {
+  all: () => store.get('wallet') || {},
+  put(p) { const w = walletStore.all(); w[p.ticket_id] = p; store.set('wallet', w); },
+  drop(id) { const w = walletStore.all(); delete w[id]; store.set('wallet', w); },
+};
+
+function icsFor(p) {
+  const f = (d) => new Date(d).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//SahneBilet//TR', 'BEGIN:VEVENT',
+    `UID:${p.ticket_id}@sahnebilet`, `DTSTAMP:${f(new Date())}`, `DTSTART:${f(p.starts_at)}`, `DTEND:${f(p.ends_at)}`,
+    `SUMMARY:${p.movie_title} (${p.seat})`, `LOCATION:${p.hall_name}`, 'DESCRIPTION:Girişte bilet QR kodunu gösterin.',
+    'BEGIN:VALARM', 'TRIGGER:-PT1H', 'ACTION:DISPLAY', 'DESCRIPTION:Seansa 1 saat', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'];
+  return lines.join('\r\n');
+}
+
+async function viewPass(tid) {
+  let p = null;
+  let offline = false;
+  try {
+    p = await api('GET', `/api/tickets/${tid}/qr`);
+    walletStore.put(p);
+  } catch (e) {
+    if (e.code === 'TICKET_REFUNDED' || e.status === 404) { walletStore.drop(tid); throw e; }
+    p = walletStore.all()[tid];
+    if (!p) throw e;
+    offline = true;
+  }
+  const past = new Date(p.ends_at) < new Date();
+  $app.innerHTML = `
+    <a href="#/wallet" class="small muted">← Cüzdanım</a>
+    <div class="pass">
+      <div class="pass-head">
+        <div><div class="label" style="color:#CBD5E1">SahneBilet</div><div class="pass-title">${esc(p.movie_title)}</div></div>
+        <span class="tag">${p.category === 'student' ? 'Öğrenci' : 'Tam'}</span>
+      </div>
+      <div class="pass-grid">
+        <div><div class="label">Tarih</div><strong>${esc(fmtDay(p.starts_at))}</strong></div>
+        <div><div class="label">Saat</div><strong>${fmtTime(p.starts_at)}</strong></div>
+        <div><div class="label">Salon</div><strong>${esc(p.hall_name)}</strong></div>
+        <div><div class="label">Koltuk</div><strong class="pass-seat">${esc(p.seat)}</strong></div>
+      </div>
+      <div class="pass-qr"><div id="qr" class="qr"></div></div>
+      <div class="small muted" style="text-align:center;padding:0 16px">${past ? 'Seans sona erdi.' : `Girişte okutun · ${fmtDT(p.valid_from)} itibarıyla geçerli · tek kullanımlık`}</div>
+      <div class="pass-id mono">${esc(p.ticket_id)}</div>
+    </div>
+    ${offline ? '<div class="notice warn" style="margin-top:12px">Çevrimdışı: cihazda kayıtlı bilet gösteriliyor.</div>' : ''}
+    <div class="row noprint" style="margin-top:14px">
+      <button id="ics" class="btn btn-ghost">Takvime ekle</button>
+      <button id="print" class="btn btn-ghost">Yazdır / PDF</button>
+    </div>
+    <p class="small muted noprint">Bu bilet cihazınıza kaydedildi; kapıda internet olmasa da Cüzdanım'dan açılır. Ekran parlaklığını artırmanız okutmayı hızlandırır.</p>`;
+  drawQR($app.querySelector('#qr'), p.qr, 232);
+  $app.querySelector('#ics').addEventListener('click', () => {
+    const url = URL.createObjectURL(new Blob([icsFor(p)], { type: 'text/calendar' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `sahnebilet-${p.seat}.ics`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  $app.querySelector('#print').addEventListener('click', () => window.print());
+}
+
+function viewWallet() {
+  const list = Object.values(walletStore.all()).sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
+  const now = new Date();
+  $app.innerHTML = `
+    <h1>Cüzdanım</h1>
+    <p class="lead">Açtığınız biletler bu cihazda saklanır ve internet olmadan da gösterilebilir. Yeni bilet eklemek için Biletlerim'den "Cüzdan bileti"ne dokunun.</p>
+    <div class="card">${list.length === 0 ? empty('Cüzdanınızda bilet yok.') : list.map((p) => `
+      <a class="show-row" href="#/pass/${esc(p.ticket_id)}">
+        <span class="show-time">${fmtTime(p.starts_at)}</span>
+        <span><strong>${esc(p.movie_title)}</strong><br><span class="muted small">${esc(fmtDay(p.starts_at))} · ${esc(p.hall_name)} · ${esc(p.seat)}</span></span>
+        <span>${new Date(p.ends_at) < now ? '<span class="tag">geçmiş</span>' : '<span class="tag ok">geçerli</span>'}</span>
+      </a>`).join('')}</div>`;
+}
+
 // ---------- router
 
 const routes = [
@@ -991,6 +1071,8 @@ const routes = [
   [/^#\/orders$/, () => render(() => viewOrders())],
   [/^#\/order\/([0-9a-f-]+)$/, (m) => render(() => viewOrder(m[1]))],
   [/^#\/giftcards$/, () => render(viewGiftCards)],
+  [/^#\/wallet$/, () => viewWallet()],
+  [/^#\/pass\/([0-9a-f-]+)$/, (m) => render(() => viewPass(m[1]))],
   [/^#\/halls(?:\/(\d+))?$/, (m) => render(() => viewHalls(m[1]))],
   [/^#\/conflicts$/, () => render(viewConflicts)],
   [/^#\/audit$/, () => render(() => viewAudit())],

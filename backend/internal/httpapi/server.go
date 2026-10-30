@@ -442,12 +442,12 @@ func (s *Server) refund(w http.ResponseWriter, r *http.Request, a service.Actor)
 }
 
 func (s *Server) ticketQR(w http.ResponseWriter, r *http.Request, a service.Actor) {
-	code, err := s.svc.TicketQR(r.Context(), a, r.PathValue("id"))
+	pass, err := s.svc.TicketQR(r.Context(), a, r.PathValue("id"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"ticket_id": r.PathValue("id"), "qr": code})
+	writeJSON(w, http.StatusOK, pass)
 }
 
 // --- gate

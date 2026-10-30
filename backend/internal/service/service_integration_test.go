@@ -431,9 +431,13 @@ func TestGate_OnlineScanOnceAndOfflineSyncConflicts(t *testing.T) {
 	}
 	gateUser := staff(t, "kapi@sahnebilet.test", service.RoleGate)
 	t1, t2 := o.Lines[0].TicketID, o.Lines[1].TicketID
-	qr1, err := svc.TicketQR(ctx, a, t1)
+	pass1, err := svc.TicketQR(ctx, a, t1)
 	if err != nil {
 		t.Fatal(err)
+	}
+	qr1 := pass1.QR
+	if pass1.Seat == "" || pass1.MovieTitle == "" || !pass1.ValidFrom.Before(pass1.StartsAt) {
+		t.Fatalf("pass details missing: %+v", pass1)
 	}
 	if _, err := ticket.Verify(svc.PublicKey(), qr1, time.Now()); err != nil {
 		t.Fatal(err)

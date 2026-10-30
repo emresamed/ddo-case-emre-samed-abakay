@@ -391,27 +391,45 @@ func (s *Service) ListOrders(ctx context.Context, a Actor, cursor string, limit 
 	return p, nil
 }
 
-// TicketQR returns the signed QR payload of a ticket.
-func (s *Service) TicketQR(ctx context.Context, a Actor, ticketID string) (string, error) {
-	var owner, showtimeID int64
-	var label, status string
-	var starts, ends time.Time
-	err := s.DB.QueryRow(ctx, `SELECT o.user_id, l.showtime_id, se.label, l.status, st.starts_at, st.ends_at
-		FROM order_lines l JOIN orders o ON o.id = l.order_id JOIN seats se ON se.id = l.seat_id JOIN showtimes st ON st.id = l.showtime_id
-		WHERE l.ticket_id::text = $1`, ticketID).Scan(&owner, &showtimeID, &label, &status, &starts, &ends)
+// TicketPass is a ticket as shown in the wallet: the signed QR payload plus
+// what the customer needs to see at the door.
+type TicketPass struct {
+	TicketID   string    `json:"ticket_id"`
+	QR         string    `json:"qr"`
+	MovieTitle string    `json:"movie_title"`
+	HallName   string    `json:"hall_name"`
+	Seat       string    `json:"seat"`
+	Category   string    `json:"category"`
+	Status     string    `json:"status"`
+	StartsAt   time.Time `json:"starts_at"`
+	EndsAt     time.Time `json:"ends_at"`
+	ValidFrom  time.Time `json:"valid_from"`
+}
+
+// TicketQR returns the signed QR payload of a ticket with its details.
+func (s *Service) TicketQR(ctx context.Context, a Actor, ticketID string) (TicketPass, error) {
+	var owner int64
+	p := TicketPass{TicketID: ticketID}
+	var showtimeID int64
+	err := s.DB.QueryRow(ctx, `SELECT o.user_id, l.showtime_id, se.label, l.status, COALESCE(l.category,''), st.starts_at, st.ends_at, m.title, h.name
+		FROM order_lines l JOIN orders o ON o.id = l.order_id JOIN seats se ON se.id = l.seat_id
+		JOIN showtimes st ON st.id = l.showtime_id JOIN movies m ON m.id = st.movie_id JOIN halls h ON h.id = st.hall_id
+		WHERE l.ticket_id::text = $1`, ticketID).Scan(&owner, &showtimeID, &p.Seat, &p.Status, &p.Category, &p.StartsAt, &p.EndsAt, &p.MovieTitle, &p.HallName)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && owner != a.UserID && a.Role != RoleBoxOffice) {
-		return "", ErrNotFound
+		return p, ErrNotFound
 	}
 	if err != nil {
-		return "", err
+		return p, err
 	}
-	if status == "refunded" {
-		return "", E(http.StatusConflict, "TICKET_REFUNDED", "ticket was refunded")
+	if p.Status == "refunded" {
+		return p, E(http.StatusConflict, "TICKET_REFUNDED", "ticket was refunded")
 	}
-	return ticket.Sign(s.signKey, ticket.Claims{
-		TicketID: ticketID, ShowtimeID: showtimeID, Seat: label,
-		NotBefore: starts.Add(-24 * time.Hour).Unix(), NotAfter: ends.Unix(),
+	p.ValidFrom = p.StartsAt.Add(-24 * time.Hour)
+	p.QR, err = ticket.Sign(s.signKey, ticket.Claims{
+		TicketID: ticketID, ShowtimeID: showtimeID, Seat: p.Seat,
+		NotBefore: p.ValidFrom.Unix(), NotAfter: p.EndsAt.Unix(),
 	})
+	return p, err
 }
 
 // RefundResult is returned by Refund.
