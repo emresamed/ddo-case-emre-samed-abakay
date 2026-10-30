@@ -152,11 +152,20 @@ setInterval(pollLive, 5000);
 
 function viewLogin() {
   $app.innerHTML = `
-  <div class="grid grid-7-5">
+  <div class="login">
     <div>
-      <h1>SahneBilet</h1>
-      <p class="lead">Çok salonlu sinema ve tiyatro zinciri için seans programı, koltuk satışı, kampanya ve salon girişi.</p>
+      <div class="eyebrow">Sinema &amp; sahne</div>
+      <h1>Seans, koltuk ve kapı tek programda.</h1>
+      <p class="lead">On salonlu zincirin seans programı, online ve gişe satışı, kampanyaları ve salon girişi.</p>
+      <div class="login-facts">
+        <div><b>10 salon</b>günde yaklaşık 55 seans</div>
+        <div><b>10 dk</b>sepette koltuk tutma, iki kez uzatma</div>
+        <div><b>Çevrimdışı</b>kapı tarayıcısı imzalı QR okur</div>
+      </div>
+    </div>
+    <div class="stack">
       <div class="card">
+        <h2>Giriş</h2>
         <form id="f" class="stack">
           <label class="field">E-posta<input name="email" type="email" autocomplete="username" required value="musteri@sahnebilet.test"></label>
           <label class="field">Parola<input name="password" type="password" autocomplete="current-password" required value="Demo1234!"></label>
@@ -164,13 +173,13 @@ function viewLogin() {
           <button class="btn" type="submit">Giriş yap</button>
         </form>
       </div>
-    </div>
-    <div class="card">
-      <div class="label">Demo hesapları · parola Demo1234!</div>
-      <table><tbody>
-        ${Object.entries({ musteri: 'customer', gise: 'box_office', amir: 'hall_manager', programci: 'programmer', muhasebe: 'accounting', kapi: 'gate' })
-          .map(([u, r]) => `<tr class="click" data-email="${u}@sahnebilet.test"><td>${ROLE_NAMES[r]}</td><td class="mono">${u}@sahnebilet.test</td></tr>`).join('')}
-      </tbody></table>
+      <div class="card table-wrap">
+        <div class="label" style="margin-bottom:6px">Demo hesapları · parola Demo1234!</div>
+        <table><tbody>
+          ${Object.entries({ musteri: 'customer', gise: 'box_office', amir: 'hall_manager', programci: 'programmer', muhasebe: 'accounting', kapi: 'gate' })
+            .map(([u, r]) => `<tr class="click" data-email="${u}@sahnebilet.test"><td>${ROLE_NAMES[r]}</td><td class="mono">${u}@sahnebilet.test</td></tr>`).join('')}
+        </tbody></table>
+      </div>
     </div>
   </div>`;
   $app.querySelectorAll('tr[data-email]').forEach((tr) => tr.addEventListener('click', () => {
@@ -292,7 +301,8 @@ async function viewShow(id) {
   }
   const st = state.map.showtime;
   $app.innerHTML = `
-    <a href="#/shows" class="small muted">← Seanslar</a>
+    <a href="#/shows" class="back">← Seanslar</a>
+    <div class="eyebrow">Koltuk seçimi</div>
     <h1>${esc(st.movie_title)}</h1>
     <p class="lead">${esc(st.hall_name)} · ${esc(fmtDay(st.starts_at))} ${fmtTime(st.starts_at)} – ${fmtTime(st.ends_at)}</p>
     <div class="grid grid-8-4">
@@ -584,15 +594,16 @@ async function viewOrder(oid) {
   const canRefund = ['customer', 'box_office', 'hall_manager'].includes(role);
   const tix = o.lines.filter((l) => l.kind === 'ticket');
   $app.innerHTML = `
-    <a href="#/orders" class="small muted">← Siparişler</a>
+    <a href="#/orders" class="back">← Siparişler</a>
+    <div class="eyebrow">Sipariş</div>
     <h1>${esc(o.movie_title)}</h1>
     <p class="lead">${esc(o.hall_name)} · ${esc(fmtDay(o.starts_at))} ${fmtTime(o.starts_at)} · <span class="tag">${esc(o.channel === 'online' ? 'online' : 'gişe')}</span> <span class="tag ${o.status === 'paid' ? 'ok' : 'warn'}">${esc(st(o.status))}</span></p>
     <div class="grid grid-7-5">
       <div class="card">
         <h2>Biletler</h2>
         <div id="tix" class="stack">${tix.map((t) => `
-          <div class="spread" style="border-top:1px solid var(--border);padding-top:12px">
-            <div><strong>${esc(t.seat_label)}</strong> · ${t.category === 'student' ? 'Öğrenci' : 'Tam'} · ${tl(t.paid)}
+          <div class="ticket-row">
+            <div><div class="ticket-seat">${esc(t.seat_label)}</div><div class="small muted">${t.category === 'student' ? 'Öğrenci' : 'Tam'} · ${tl(t.paid)}</div>
               <div><span class="tag ${t.status === 'valid' ? 'ok' : t.status === 'used' ? '' : 'bad'}">${esc(st(t.status))}</span></div>
               ${t.status === 'valid' && role === 'customer' ? `<a class="btn btn-sm" href="#/pass/${t.ticket_id}" style="margin-top:8px">Cüzdan bileti</a>` : ''}
               ${canRefund && t.status === 'valid' ? `<button class="btn btn-ghost btn-sm" data-refund="${t.ticket_id}" style="margin-top:8px">Bu bileti iade et</button>` : ''}
@@ -640,6 +651,7 @@ async function viewOrders(cursor = '') {
   const p = await api('GET', '/api/orders?limit=20' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''));
   const role = auth.get().user.role;
   $app.innerHTML = `
+    <div class="eyebrow">${role === 'customer' ? 'Hesabım' : 'Satış'}</div>
     <h1>${role === 'customer' ? 'Biletlerim' : 'Siparişler'}</h1>
     <p class="lead">${role === 'customer' ? 'Satın aldığınız biletler ve QR kodları.' : 'Tüm kanallardan son siparişler, en yeni üstte.'}</p>
     <div class="card table-wrap">${p.items.length === 0 ? empty('Henüz sipariş yok.') : `
@@ -658,6 +670,7 @@ async function viewOrders(cursor = '') {
 
 async function viewGiftCards() {
   $app.innerHTML = `
+    <div class="eyebrow">Gişe</div>
     <h1>Hediye çeki</h1>
     <p class="lead">Gişeden hediye çeki satışı ve bakiye sorgulama. Çek birden fazla siparişte kısmen kullanılabilir.</p>
     <div class="grid grid-7-5">
@@ -691,6 +704,7 @@ async function viewHalls(hallId) {
   const current = Number(hallId) || halls.items[0].id;
   const seats = await api('GET', `/api/halls/${current}/seats`);
   $app.innerHTML = `
+    <div class="eyebrow">Salon yönetimi</div>
     <h1>Salon düzeni</h1>
     <p class="lead">Koltuğa tıklayarak türünü değiştirin: standart → VIP → engelli → kapalı (arızalı). Satılmış veya sepette olan koltuk kapatılamaz.</p>
     <div class="row" style="margin-bottom:14px">${halls.items.map((x) => `<a class="btn ${x.id === current ? '' : 'btn-ghost'} btn-sm" href="#/halls/${x.id}">${esc(x.name)} · ${x.capacity}</a>`).join('')}</div>
@@ -728,6 +742,7 @@ async function viewConflicts() {
   const c = await api('GET', '/api/gate/conflicts');
   const names = { DUPLICATE_ENTRY: 'Aynı bilet iki kez girdi', ADMITTED_AFTER_REFUND: 'İade edilmiş bilet çevrimdışı kabul edildi', UNKNOWN_TICKET: 'Tanınmayan bilet' };
   $app.innerHTML = `
+    <div class="eyebrow">Giriş kontrol</div>
     <h1>Giriş çakışmaları</h1>
     <p class="lead">Ağ kesintisinde kapı tarayıcılarının yerel olarak kabul ettiği, senkronizasyonda çakışan girişler.</p>
     <div class="card table-wrap">${c.items.length === 0 ? empty('Çakışma yok.') : `
@@ -740,6 +755,7 @@ async function viewConflicts() {
 async function viewAudit(before = 0) {
   const a = await api('GET', '/api/audit?limit=50' + (before ? '&before=' + before : ''));
   $app.innerHTML = `
+    <div class="eyebrow">Denetim</div>
     <h1>Denetim kaydı</h1>
     <p class="lead">Kritik işlemler: kim, ne zaman, neyi, eski ve yeni değer. Kayıtlar değiştirilemez (veritabanı tetikleyicisi).</p>
     <div class="card table-wrap">${a.items.length === 0 ? empty('Kayıt yok.') : `
@@ -756,6 +772,7 @@ async function viewAudit(before = 0) {
 async function viewSchedule() {
   const today = isoDay(new Date());
   $app.innerHTML = `
+    <div class="eyebrow">Programlama</div>
     <h1>Seans programı</h1>
     <p class="lead">Film süresi + 15 dk reklam + 20 dk temizlik ile salon başına çakışmasız program. Sözleşme kuralları: haftalık asgari seans ve prime-time (18:00–22:00) payı.</p>
     <div class="card stack">
@@ -804,12 +821,13 @@ async function viewMovies() {
   const m = await api('GET', '/api/movies');
   const pct = (bp) => (bp / 100).toFixed(0) + '%';
   $app.innerHTML = `
+    <div class="eyebrow">Programlama</div>
     <h1>Filmler ve oyunlar</h1>
     <p class="lead">Vizyon sözleşmesi: haftalık asgari seans, prime-time payı ve dağıtımcı hasılat payı (1., 2. ve sonraki haftalar).</p>
     <div class="grid grid-8-4">
       <div class="card table-wrap"><table><thead><tr><th>Ad</th><th>Süre</th><th>Dağıtımcı</th><th>Vizyon</th><th class="num">Asgari/hf</th><th class="num">Prime</th><th class="num">Pay 1/2/sonra</th></tr></thead><tbody>
         ${m.items.map((x) => `<tr><td><strong>${esc(x.title)}</strong> <span class="tag">${x.kind === 'play' ? 'oyun' : 'film'}</span></td><td>${x.duration_min} dk</td>
-          <td>${esc(x.distributor)}</td><td>${esc(x.release_date)}</td><td class="num">${x.min_weekly_shows}</td><td class="num">${pct(x.min_prime_bp)}</td>
+          <td>${esc(x.distributor)}</td><td class="nowrap">${esc(x.release_date)}</td><td class="num">${x.min_weekly_shows}</td><td class="num">${pct(x.min_prime_bp)}</td>
           <td class="num">${pct(x.share_week1_bp)} / ${pct(x.share_week2_bp)} / ${pct(x.share_later_bp)}</td></tr>`).join('')}
       </tbody></table></div>
       <form id="f" class="card stack"><h2>Yeni ekle</h2>
@@ -842,9 +860,10 @@ async function viewCoupons() {
   const c = await api('GET', '/api/coupons');
   const canCreate = auth.get().user.role === 'accounting';
   $app.innerHTML = `
+    <div class="eyebrow">Kampanya</div>
     <h1>Kuponlar</h1>
     <p class="lead">Kuponlar yalnızca bilete uygulanır, menüye uygulanmaz. Tam iade kupon hakkını geri verir.</p>
-    <div class="grid grid-8-4">
+    <div class="grid ${canCreate ? 'grid-8-4' : ''}">
       <div class="card table-wrap">${c.items.length === 0 ? empty('Kupon yok.') : `<table><thead><tr><th>Kod</th><th>İndirim</th><th class="num">Asgari</th><th class="num">Kullanım</th><th>Geçerlilik</th></tr></thead><tbody>
         ${c.items.map((x) => `<tr><td class="mono">${esc(x.code)}</td><td>${x.percent ? '%' + x.value / 100 : tl(x.value)}</td><td class="num">${tl(x.min_total)}</td>
           <td class="num">${x.used_count} / ${x.max_uses}</td><td class="small">${fmtDT(x.valid_from)} – ${fmtDT(x.valid_to)}</td></tr>`).join('')}</tbody></table>`}</div>
@@ -876,6 +895,7 @@ async function viewReports() {
   const today = isoDay(new Date());
   const weekAgo = isoDay(new Date(Date.now() - 6 * 864e5));
   $app.innerHTML = `
+    <div class="eyebrow">Muhasebe</div>
     <h1>Hasılat</h1>
     <p class="lead">Seans tarihine göre hasılat. İade edilen satırlar hasılattan düşülür, ayrıca gösterilir. Dağıtımcı payı net (KDV ve eğlence vergisi hariç) bilet hasılatı üzerinden hesaplanır.</p>
     <div class="row" style="margin-bottom:14px">
@@ -962,6 +982,7 @@ async function viewGate() {
     catch (e) { console.warn('Ed25519 not supported', e); return null; }
   };
   $app.innerHTML = `
+    <div class="eyebrow">Giriş kontrol</div>
     <h1>Giriş tarayıcı</h1>
     <p class="lead">QR imzası cihazda doğrulanır; ağ kesilse de çalışır. Çevrimdışı girişler sırada bekler ve senkronizasyonda sunucuya gönderilir.</p>
     <div class="grid grid-7-5">
@@ -1070,7 +1091,7 @@ async function viewPass(tid) {
   }
   const past = new Date(p.ends_at) < new Date();
   $app.innerHTML = `
-    <a href="#/wallet" class="small muted">← Cüzdanım</a>
+    <a href="#/wallet" class="back">← Cüzdanım</a>
     <div class="pass">
       <div class="pass-head">
         <div><div class="label" style="color:#CBD5E1">SahneBilet</div><div class="pass-title">${esc(p.movie_title)}</div></div>
@@ -1106,6 +1127,7 @@ function viewWallet() {
   const list = Object.values(walletStore.all()).sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
   const now = new Date();
   $app.innerHTML = `
+    <div class="eyebrow">Hesabım</div>
     <h1>Cüzdanım</h1>
     <p class="lead">Açtığınız biletler bu cihazda saklanır ve internet olmadan da gösterilebilir. Yeni bilet eklemek için Biletlerim'den "Cüzdan bileti"ne dokunun.</p>
     <div class="card">${list.length === 0 ? empty('Cüzdanınızda bilet yok.') : list.map((p) => `
