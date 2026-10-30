@@ -407,7 +407,7 @@ func (s *Service) TicketQR(ctx context.Context, a Actor, ticketID string) (strin
 	}
 	return ticket.Sign(s.signKey, ticket.Claims{
 		TicketID: ticketID, ShowtimeID: showtimeID, Seat: label,
-		NotBefore: starts.Add(-3 * time.Hour).Unix(), NotAfter: ends.Unix(),
+		NotBefore: starts.Add(-24 * time.Hour).Unix(), NotAfter: ends.Unix(),
 	})
 }
 

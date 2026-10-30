@@ -1,0 +1,98 @@
+name: sahnebilet
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sahnebilet
+      POSTGRES_USER: sahnebilet
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=256MB"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sahnebilet -d sahnebilet"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    # no ports: the database is reachable only inside the compose network
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgres://sahnebilet:${POSTGRES_PASSWORD}@db:5432/sahnebilet?sslmode=disable&pool_max_conns=60
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      TICKET_SIGNING_SEED: ${TICKET_SIGNING_SEED:?set TICKET_SIGNING_SEED in .env}
+      SEED: ${SEED:-42}
+      HOLD_TTL: ${HOLD_TTL:-10m}
+      TZ_NAME: Europe/Istanbul
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/api", "healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports:
+      - "3000:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  simulator:
+    build: ./backend
+    entrypoint: ["/app/simulator"]
+    environment:
+      API_URL: http://api:8080
+      SEED: ${SEED:-42}
+      SIM_RATE: ${SIM_RATE:-2}
+      SIM_RUSH_EVERY: ${SIM_RUSH_EVERY:-10}
+      SIM_RUSH_USERS: ${SIM_RUSH_USERS:-150}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  verify:
+    build: ./backend
+    entrypoint: ["/app/verify"]
+    profiles: ["verify"]
+    environment:
+      API_URL: http://api:8080
+      WEB_URL: http://web:8080
+      DATABASE_URL: postgres://sahnebilet:${POSTGRES_PASSWORD}@db:5432/sahnebilet?sslmode=disable
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["load"]
+    volumes:
+      - ./loadtest:/scripts:ro
+    environment:
+      API_URL: http://api:8080
+      VUS: ${K6_VUS:-2000}
+    command: ["run", "/scripts/seat-rush.js"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:

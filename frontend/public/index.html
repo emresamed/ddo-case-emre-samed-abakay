@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SahneBilet — Seans, Koltuk ve Giriş Yönetimi</title>
+  <meta name="description" content="Çok salonlu sinema ve tiyatro zinciri için seans programı, koltuk satışı, kampanya ve QR giriş kontrolü.">
+  <meta property="og:title" content="SahneBilet">
+  <meta property="og:description" content="Seans programı, koltuk satışı, kampanya ve QR giriş kontrolü.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-in">
+      <a href="#/" class="brand">SahneBilet</a>
+      <nav id="nav" class="nav"></nav>
+      <div class="who">
+        <span id="live" class="live" title="Son 1 dakikadaki sistem hareketi"></span>
+        <span id="user" class="muted"></span>
+        <button id="logout" class="btn btn-ghost btn-sm" hidden>Çıkış</button>
+      </div>
+    </div>
+  </header>
+  <main id="app" class="wrap"></main>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>

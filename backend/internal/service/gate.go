@@ -147,6 +147,8 @@ func (s *Service) Sync(ctx context.Context, a Actor, req SyncRequest) (GateState
 		idSet := map[string]bool{}
 		for i := range req.Scans {
 			req.Scans[i].GateID = req.GateID
+			// PostgreSQL stores microseconds; normalise so replays compare equal
+			req.Scans[i].ScannedAt = req.Scans[i].ScannedAt.Truncate(time.Microsecond)
 			if req.Scans[i].ScannedAt.IsZero() || req.Scans[i].TicketID == "" {
 				return invalid("every scan needs ticket_id and scanned_at")
 			}
@@ -179,6 +181,30 @@ func (s *Service) Sync(ctx context.Context, a Actor, req SyncRequest) (GateState
 		if err := rows.Err(); err != nil {
 			return err
 		}
+		// drop events this server already received (a device retrying a
+		// sync after a timeout) so that a replay creates no new conflicts
+		seen := map[string]bool{}
+		srows, err := tx.Query(ctx, `SELECT ticket_id::text, gate_id, scanned_at FROM gate_scans WHERE ticket_id::text = ANY($1)`, ids)
+		if err != nil {
+			return err
+		}
+		for srows.Next() {
+			var tid, gid string
+			var at time.Time
+			if err := srows.Scan(&tid, &gid, &at); err != nil {
+				srows.Close()
+				return err
+			}
+			seen[tid+"|"+gid+"|"+at.UTC().Format(time.RFC3339Nano)] = true
+		}
+		srows.Close()
+		fresh := req.Scans[:0:0]
+		for _, e := range req.Scans {
+			if !seen[e.TicketID+"|"+e.GateID+"|"+e.ScannedAt.UTC().Format(time.RFC3339Nano)] {
+				fresh = append(fresh, e)
+			}
+		}
+		req.Scans = fresh
 		changed, conf := gate.Reconcile(state, req.Scans)
 		conflicts = conf
 		for _, t := range changed {
